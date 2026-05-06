@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """Shared fixtures for integration tests.
 
 These fixtures start a real qwenpaw app subprocess with isolated workspace
@@ -12,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -86,7 +88,12 @@ class AppServer:
         text = text.replace("\n", "\\n")
         return f"{text[: max_len - 3]}..." if len(text) > max_len else text
 
-    def api_request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
+    def api_request(
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> httpx.Response:
         """Send an HTTP request and always print request/response summary."""
         url = f"{self.base_url}{path}" if path.startswith("/") else path
         request_payload = kwargs.get("json")
@@ -94,7 +101,11 @@ class AppServer:
             request_payload = kwargs.get("data")
         request_params = kwargs.get("params")
 
-        response = self.client.request(method=method.upper(), url=url, **kwargs)
+        response = self.client.request(
+            method=method.upper(),
+            url=url,
+            **kwargs,
+        )
         response_text = response.text
         if len(response_text) > 240:
             response_text = f"{response_text[:237]}..."
@@ -114,7 +125,7 @@ class AppServer:
 
 
 @pytest.fixture
-def app_server(tmp_path: Path) -> AppServer:
+def app_server(tmp_path: Path) -> Iterator[AppServer]:
     """Start one isolated qwenpaw app process for a test."""
     host = "127.0.0.1"
     port = _find_free_port(host)
@@ -138,7 +149,7 @@ def app_server(tmp_path: Path) -> AppServer:
     env["PYTHONUNBUFFERED"] = "1"
 
     logs: list[str] = []
-    process = subprocess.Popen(
+    with subprocess.Popen(
         [
             sys.executable,
             "-m",
@@ -156,59 +167,59 @@ def app_server(tmp_path: Path) -> AppServer:
         text=True,
         bufsize=1,
         env=env,
-    )
-    assert process.stdout is not None
+    ) as process:
+        assert process.stdout is not None
 
-    log_thread = threading.Thread(
-        target=_tee_stream,
-        args=(process.stdout, logs),
-        daemon=True,
-    )
-    log_thread.start()
+        log_thread = threading.Thread(
+            target=_tee_stream,
+            args=(process.stdout, logs),
+            daemon=True,
+        )
+        log_thread.start()
 
-    client = httpx.Client(timeout=5.0, trust_env=False)
+        client = httpx.Client(timeout=5.0, trust_env=False)
 
-    try:
-        max_wait_seconds = 60
-        start_at = time.time()
-        last_error: str | None = None
-        while time.time() - start_at < max_wait_seconds:
-            if process.poll() is not None:
+        try:
+            max_wait_seconds = 60
+            start_at = time.time()
+            last_error: str | None = None
+            while time.time() - start_at < max_wait_seconds:
+                if process.poll() is not None:
+                    raise AssertionError(
+                        "qwenpaw app exited during startup.\n"
+                        f"exit_code={process.returncode}\n"
+                        f"logs:\n{''.join(logs)[-4000:]}",
+                    )
+
+                try:
+                    resp = client.get(f"http://{host}:{port}/api/version")
+                    if resp.status_code == 200:
+                        break
+                except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                    last_error = str(exc)
+                time.sleep(0.5)
+            else:
                 raise AssertionError(
-                    "qwenpaw app exited during startup.\n"
-                    f"exit_code={process.returncode}\n"
+                    "qwenpaw app did not become ready in time.\n"
+                    f"last_error={last_error}\n"
                     f"logs:\n{''.join(logs)[-4000:]}",
                 )
 
-            try:
-                resp = client.get(f"http://{host}:{port}/api/version")
-                if resp.status_code == 200:
-                    break
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
-                last_error = str(exc)
-            time.sleep(0.5)
-        else:
-            raise AssertionError(
-                "qwenpaw app did not become ready in time.\n"
-                f"last_error={last_error}\n"
-                f"logs:\n{''.join(logs)[-4000:]}",
+            yield AppServer(
+                host=host,
+                port=port,
+                process=process,
+                client=client,
+                logs=logs,
+                log_thread=log_thread,
             )
-
-        yield AppServer(
-            host=host,
-            port=port,
-            process=process,
-            client=client,
-            logs=logs,
-            log_thread=log_thread,
-        )
-    finally:
-        client.close()
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-        log_thread.join(timeout=2)
+        finally:
+            client.close()
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            log_thread.join(timeout=2)
