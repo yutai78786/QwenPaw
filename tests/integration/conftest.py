@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Shared fixtures for integration tests.
 
-These fixtures start a real qwenpaw app subprocess with isolated workspace
+These fixtures start a real QwenPaw app subprocess with isolated workspace
 directories and a sanitized environment to avoid touching local secrets.
 """
 from __future__ import annotations
