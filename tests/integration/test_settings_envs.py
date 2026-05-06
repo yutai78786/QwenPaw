@@ -2,6 +2,7 @@
 """Integration tests for settings and env management APIs."""
 from __future__ import annotations
 
+
 def test_settings_language_default_en(app_server) -> None:
     """Language should default to English in a fresh workspace."""
     response = app_server.api_request("GET", "/api/settings/language")
