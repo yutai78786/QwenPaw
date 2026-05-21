@@ -11,9 +11,9 @@ name: Integration Nightly
 
 on:
   schedule:
-    # 16:17 UTC daily ~= 00:17 Beijing the next day.
+    # 18:17 UTC daily ~= 02:17 Beijing the next day.
     # Off-the-hour to avoid the global GitHub Actions cron rush at :00 / :30.
-    - cron: '17 16 * * *'
+    - cron: '17 18 * * *'
   workflow_dispatch:
 
 jobs:
