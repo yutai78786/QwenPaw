@@ -92,4 +92,6 @@ def test_set_active_model_rejects_unknown_provider_404(app_server) -> None:
     )
     assert resp.status_code == 404, app_server.logs_tail()
     detail = resp.json().get("detail", "")
-    assert "integ_unknown_provider_xyz" in detail or "not found" in detail.lower()
+    assert (
+        "integ_unknown_provider_xyz" in detail or "not found" in detail.lower()
+    )

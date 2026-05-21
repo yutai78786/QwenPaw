@@ -31,7 +31,7 @@ def _stream_create_backup(app_server, payload: dict) -> dict:
         for line in resp.iter_lines():
             if not line or not line.startswith("data:"):
                 continue
-            event = json.loads(line[len("data:"):].strip())
+            event = json.loads(line[len("data:") :].strip())
             if event.get("type") == "error":
                 raise AssertionError(
                     f"backup create errored: {event} | "
