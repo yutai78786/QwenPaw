@@ -225,9 +225,14 @@ jobs:
         env:
           COVERAGE_FILE: .coverage.unit
         run: |
+          # No --cov-branch here so that unit/contract data files use the
+          # same statement-level format as the integration subprocess
+          # rcfile (tests/integration/conftest.py writes branch = false).
+          # `coverage combine` rejects mixing statement-only and branch
+          # data ("Can't combine statement coverage data with branch
+          # data"), so the three tiers must agree on format.
           pytest tests/unit -v \
             --cov=src/qwenpaw \
-            --cov-branch \
             --cov-report=term:skip-covered \
             --cov-report=xml:coverage.unit.xml \
             --cov-fail-under=0
@@ -239,7 +244,6 @@ jobs:
         run: |
           pytest tests/contract -v \
             --cov=src/qwenpaw \
-            --cov-branch \
             --cov-report=term:skip-covered \
             --cov-report=xml:coverage.contract.xml \
             --cov-fail-under=0
