@@ -302,8 +302,10 @@ jobs:
           CONTRACT=$(get_pct .coverage.contract)
           INTEGRATION=$(get_pct .coverage.integration)
           COMBINED=$(get_pct .coverage)
-          echo "UNIT=${UNIT:-n/a} CONTRACT=${CONTRACT:-n/a} \
-INTEGRATION=${INTEGRATION:-n/a} COMBINED=${COMBINED:-n/a}"
+          echo "UNIT=${UNIT:-n/a}"
+          echo "CONTRACT=${CONTRACT:-n/a}"
+          echo "INTEGRATION=${INTEGRATION:-n/a}"
+          echo "COMBINED=${COMBINED:-n/a}"
 
           {
             echo "## 📊 Coverage report"
