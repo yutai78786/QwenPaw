@@ -302,9 +302,20 @@ jobs:
           # number per tier — missing or malformed data should fall back
           # to "n/a", not fail the job.
           set +e
+
+          echo "=== Per-tier coverage reports (debug) ==="
+          for f in .coverage.unit .coverage.contract .coverage.integration .coverage; do
+            echo "--- $f (last 5 lines) ---"
+            coverage report --data-file="$f" --fail-under=0 2>&1 | tail -5
+            echo
+          done
+          echo "=== End debug ==="
+
           # Extract "TOTAL ... NN.N%" from each per-class data file.
+          # We do not redirect stderr so any "No data to report" /
+          # "No source for code" diagnostics surface in the build log.
           get_pct() {
-            coverage report --data-file="$1" --fail-under=0 2>/dev/null \
+            coverage report --data-file="$1" --fail-under=0 \
               | awk '/^TOTAL/{p=$NF; gsub(/%/,"",p); print p}' \
               | tail -1
           }
