@@ -270,12 +270,22 @@ jobs:
       - name: Combine all coverage data
         shell: bash
         run: |
-          # --keep preserves the per-class .coverage.* files so we can read
-          # individual percentages in the next step.
-          coverage combine --keep \
+          # `coverage combine --keep` should preserve the input files but
+          # in practice (coverage 7.x) it still rewrites them, leaving the
+          # per-tier `.coverage.*` data files unreadable in the next step.
+          # Make explicit copies so the summary step can read each tier.
+          cp .coverage.unit .coverage.unit.bak
+          cp .coverage.contract .coverage.contract.bak
+          cp .coverage.integration .coverage.integration.bak
+          coverage combine \
             .coverage.unit .coverage.contract .coverage.integration
-          # Same exit-2 tolerance as above; the combined number is shown
-          # in the summary/PR-comment step regardless.
+          mv .coverage.unit.bak .coverage.unit
+          mv .coverage.contract.bak .coverage.contract
+          mv .coverage.integration.bak .coverage.integration
+          echo "Data files after combine:"
+          ls -la .coverage* || true
+          # Same exit-2 tolerance: per-tier xml may be below fail_under
+          # while the combined value clears it.
           coverage xml -o coverage.combined.xml || [ "$?" -eq 2 ]
           coverage html -d htmlcov-combined || [ "$?" -eq 2 ]
           echo "Combined coverage report:"
