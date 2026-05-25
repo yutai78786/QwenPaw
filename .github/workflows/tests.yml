@@ -285,6 +285,13 @@ jobs:
         id: cov_summary
         shell: bash
         run: |
+          # The default `bash --noprofile --norc -e -o pipefail` shell would
+          # propagate a non-zero exit from `coverage report` (or its
+          # downstream pipeline) inside $(...) and abort the step before
+          # the markdown file is written. We only want a best-effort
+          # number per tier — missing or malformed data should fall back
+          # to "n/a", not fail the job.
+          set +e
           # Extract "TOTAL ... NN.N%" from each per-class data file.
           get_pct() {
             coverage report --data-file="$1" --fail-under=0 2>/dev/null \
@@ -295,6 +302,8 @@ jobs:
           CONTRACT=$(get_pct .coverage.contract)
           INTEGRATION=$(get_pct .coverage.integration)
           COMBINED=$(get_pct .coverage)
+          echo "UNIT=${UNIT:-n/a} CONTRACT=${CONTRACT:-n/a} \
+INTEGRATION=${INTEGRATION:-n/a} COMBINED=${COMBINED:-n/a}"
 
           {
             echo "## 📊 Coverage report"
