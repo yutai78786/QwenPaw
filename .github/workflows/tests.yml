@@ -295,34 +295,27 @@ jobs:
         id: cov_summary
         shell: bash
         run: |
-          # The default `bash --noprofile --norc -e -o pipefail` shell would
-          # propagate a non-zero exit from `coverage report` (or its
-          # downstream pipeline) inside $(...) and abort the step before
-          # the markdown file is written. We only want a best-effort
-          # number per tier — missing or malformed data should fall back
-          # to "n/a", not fail the job.
+          # The default `bash --noprofile --norc -e -o pipefail` shell
+          # propagates non-zero exits from inside $(...) and aborts the
+          # step before the markdown file is written. We only want a
+          # best-effort number per tier; missing/malformed data should
+          # fall back to "n/a".
           set +e
 
-          echo "=== Per-tier coverage reports (debug) ==="
-          for f in .coverage.unit .coverage.contract .coverage.integration .coverage; do
-            echo "--- $f (last 5 lines) ---"
-            coverage report --data-file="$f" --fail-under=0 2>&1 | tail -5
-            echo
-          done
-          echo "=== End debug ==="
-
-          # Extract "TOTAL ... NN.N%" from each per-class data file.
-          # We do not redirect stderr so any "No data to report" /
-          # "No source for code" diagnostics surface in the build log.
+          # Per-tier `coverage report --data-file=.coverage.unit` returns
+          # "No data to report." in CI (after `coverage combine` rewrites
+          # paths in the combined .coverage but not in the per-tier
+          # backups). The cobertura XML produced by pytest-cov / coverage
+          # xml does not go through that filter, so read line-rate from
+          # the xml directly via a one-liner python3 -c (avoids yaml/bash
+          # heredoc indentation pitfalls).
           get_pct() {
-            coverage report --data-file="$1" --fail-under=0 \
-              | awk '/^TOTAL/{p=$NF; gsub(/%/,"",p); print p}' \
-              | tail -1
+            python3 -c 'import sys, xml.etree.ElementTree as ET; print(round(float(ET.parse(sys.argv[1]).getroot().attrib.get("line-rate", "0")) * 100))' "$1" 2>/dev/null || echo "n/a"
           }
-          UNIT=$(get_pct .coverage.unit)
-          CONTRACT=$(get_pct .coverage.contract)
-          INTEGRATION=$(get_pct .coverage.integration)
-          COMBINED=$(get_pct .coverage)
+          UNIT=$(get_pct coverage.unit.xml)
+          CONTRACT=$(get_pct coverage.contract.xml)
+          INTEGRATION=$(get_pct coverage.integration.xml)
+          COMBINED=$(get_pct coverage.combined.xml)
           echo "UNIT=${UNIT:-n/a}"
           echo "CONTRACT=${CONTRACT:-n/a}"
           echo "INTEGRATION=${INTEGRATION:-n/a}"
