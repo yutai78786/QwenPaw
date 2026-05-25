@@ -220,25 +220,136 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev,full]"
 
-      - name: Run all tests with coverage
+      - name: Run unit tests with coverage
+        shell: bash
+        env:
+          COVERAGE_FILE: .coverage.unit
+        run: |
+          pytest tests/unit -v \
+            --cov=src/qwenpaw \
+            --cov-branch \
+            --cov-report=term:skip-covered \
+            --cov-report=xml:coverage.unit.xml \
+            --cov-fail-under=0
+
+      - name: Run contract tests with coverage
+        shell: bash
+        env:
+          COVERAGE_FILE: .coverage.contract
+        run: |
+          pytest tests/contract -v \
+            --cov=src/qwenpaw \
+            --cov-branch \
+            --cov-report=term:skip-covered \
+            --cov-report=xml:coverage.contract.xml \
+            --cov-fail-under=0
+
+      - name: Run integration tests with subprocess coverage
+        shell: bash
+        env:
+          QWENPAW_INTEGRATION_COVERAGE: "1"
+        run: |
+          # Subprocess coverage: app subprocess writes coverage data into
+          # .integration_coverage/integration_subproc (combined by the
+          # session-finish hook in conftest.py). Parent process must not
+          # carry --cov, hence --no-cov here.
+          pytest tests/integration -v --no-cov -m integration
+          cp .integration_coverage/integration_subproc .coverage.integration
+          coverage xml --data-file=.coverage.integration \
+            -o coverage.integration.xml
+
+      - name: Combine all coverage data
         shell: bash
         run: |
-          pytest tests/ \
-            -v \
-            --cov=src/qwenpaw \
-            --cov-report=xml \
-            --cov-report=term-missing \
-            --cov-report=html
+          # --keep preserves the per-class .coverage.* files so we can read
+          # individual percentages in the next step.
+          coverage combine --keep \
+            .coverage.unit .coverage.contract .coverage.integration
+          coverage xml -o coverage.combined.xml
+          coverage html -d htmlcov-combined
+          echo "Combined coverage report:"
+          coverage report --skip-covered --fail-under=0
 
-      - name: Generate coverage comment on PR
+      - name: Build coverage summary table
+        id: cov_summary
+        shell: bash
+        run: |
+          # Extract "TOTAL ... NN.N%" from each per-class data file.
+          get_pct() {
+            coverage report --data-file="$1" --fail-under=0 2>/dev/null \
+              | awk '/^TOTAL/{p=$NF; gsub(/%/,"",p); print p}' \
+              | tail -1
+          }
+          UNIT=$(get_pct .coverage.unit)
+          CONTRACT=$(get_pct .coverage.contract)
+          INTEGRATION=$(get_pct .coverage.integration)
+          COMBINED=$(get_pct .coverage)
+
+          {
+            echo "## 📊 Coverage report"
+            echo ""
+            echo "| Test category | Coverage |"
+            echo "|---|---|"
+            echo "| Unit        | ${UNIT:-n/a}% |"
+            echo "| Contract    | ${CONTRACT:-n/a}% |"
+            echo "| Integration | ${INTEGRATION:-n/a}% |"
+            echo "| **Combined** | **${COMBINED:-n/a}%** |"
+            echo ""
+            echo "> Combined = \`coverage combine\` of unit + contract + integration (subprocess mode)."
+            echo "> HTML reports under workflow artifact \`coverage-reports\` (\`htmlcov-combined\` / \`htmlcov-integration\`)."
+          } > coverage_summary.md
+
+          cat coverage_summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sticky coverage PR comment
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
-        uses: orgoro/coverage@v3.2
+        uses: actions/github-script@v7
         with:
-          coverageFile: coverage.xml
-          token: ${{ github.token }}
-          thresholdAll: 0.0
-          thresholdNew: 0.0
-          thresholdModified: 0.0
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('coverage_summary.md', 'utf8');
+            const marker = '<!-- qwenpaw-coverage-summary -->';
+            const finalBody = `${marker}\n${body}`;
+            const comments = await github.paginate(
+              github.rest.issues.listComments,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+              },
+            );
+            const existing = comments.find(
+              (c) => c.body && c.body.includes(marker),
+            );
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body: finalBody,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: finalBody,
+              });
+            }
+
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-reports
+          path: |
+            coverage.unit.xml
+            coverage.contract.xml
+            coverage.integration.xml
+            coverage.combined.xml
+            htmlcov-combined/
+            htmlcov-integration/
+          retention-days: 7
 
   test-summary:
     name: Test Summary
