@@ -159,9 +159,11 @@ jobs:
           if [ -f /tmp/qwenpaw.pid ]; then
             kill "$(cat /tmp/qwenpaw.pid)" 2>/dev/null || true
           fi
-          # Also kill by port in case PID file was not written
           if [ "$RUNNER_OS" = "Linux" ] || [ "$RUNNER_OS" = "macOS" ]; then
             lsof -ti:8088 | xargs kill 2>/dev/null || true
+          fi
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            taskkill //F //IM python.exe 2>/dev/null || true
           fi
 
   # ── Docker build + health check ────────────────────────────────────────────
@@ -225,12 +227,18 @@ jobs:
 
       - name: Verify container version
         run: |
+          expected=$(python3 -c "
+          import re, pathlib
+          text = pathlib.Path('src/qwenpaw/__version__.py').read_text()
+          print(re.search(r'__version__\s*=\s*\"([^\"]+)\"', text).group(1))
+          ")
           response=$(curl -sf http://127.0.0.1:8088/api/version)
           echo "Response: $response"
-          version=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
-          echo "Docker container version: $version"
-          if [ -z "$version" ]; then
-            echo "::error::Empty version in /api/version response"
+          actual=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
+          echo "Expected: $expected"
+          echo "Actual:   $actual"
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::Docker version mismatch: expected=$expected actual=$actual"
             exit 1
           fi
 
