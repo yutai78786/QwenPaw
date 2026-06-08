@@ -47,10 +47,10 @@ jobs:
             python-version: "3.10"
 
     steps:
-      - name: Download wheel artifact
+      - name: Download dist artifacts
         uses: actions/download-artifact@v4
         with:
-          name: qwenpaw-wheel
+          name: qwenpaw-dist
           path: dist
 
       - name: Download version file
@@ -163,7 +163,8 @@ jobs:
             lsof -ti:8088 | xargs kill 2>/dev/null || true
           fi
           if [ "$RUNNER_OS" = "Windows" ]; then
-            taskkill //F //IM python.exe 2>/dev/null || true
+            pid=$(netstat -ano 2>/dev/null | grep ':8088 ' | grep LISTEN | awk '{print $5}' | head -1)
+            if [ -n "$pid" ]; then taskkill //F //PID "$pid" 2>/dev/null || true; fi
           fi
 
   # ── Docker build + health check ────────────────────────────────────────────
@@ -334,5 +335,6 @@ jobs:
             lsof -ti:8088 | xargs kill 2>/dev/null || true
           fi
           if [ "$RUNNER_OS" = "Windows" ]; then
-            taskkill //F //IM python.exe 2>/dev/null || true
+            pid=$(netstat -ano 2>/dev/null | grep ':8088 ' | grep LISTEN | awk '{print $5}' | head -1)
+            if [ -n "$pid" ]; then taskkill //F //PID "$pid" 2>/dev/null || true; fi
           fi
