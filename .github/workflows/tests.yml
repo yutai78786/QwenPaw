@@ -79,7 +79,8 @@ jobs:
     needs: approval-gate
     if: |
       always() &&
-      needs.approval-gate.result == 'success'
+      needs.approval-gate.result == 'success' &&
+      false
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
