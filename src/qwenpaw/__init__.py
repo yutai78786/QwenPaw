@@ -31,3 +31,5 @@ logging.getLogger(__name__).debug(
     "%.3fs package init",
     time.perf_counter() - _t0,
 )
+
+# CANARY (throwaway, delete after #6764 evidence): scenario B benign code change
