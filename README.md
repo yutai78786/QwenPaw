@@ -557,3 +557,5 @@ All thanks to our contributors:
 <a href="https://github.com/agentscope-ai/QwenPaw/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=agentscope-ai/QwenPaw" alt="Contributors" />
 </a>
+
+<!-- gate canary scenario F: second commit, run will be cancelled while unit tests running -->
