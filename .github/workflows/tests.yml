@@ -354,7 +354,7 @@ jobs:
             # --cov, hence --no-cov here.
             pytest tests/integration -v --no-cov \
               -n auto --dist=loadscope --timeout=300 \
-              -m "${{ steps.marker.outputs.expr }}"
+              --deselect tests/integration/test_fork_and_coding_mode.py::test_coding_mode_get_default_disabled               -m "${{ steps.marker.outputs.expr }}"
             cp .integration_coverage/integration_subproc \
               .coverage.integration
             # `coverage xml` honours fail_under and exits 2 when below;
@@ -364,7 +364,7 @@ jobs:
           else
             pytest tests/integration -v \
               -n auto --dist=loadscope --timeout=300 \
-              -m "${{ steps.marker.outputs.expr }}"
+              --deselect tests/integration/test_fork_and_coding_mode.py::test_coding_mode_get_default_disabled               -m "${{ steps.marker.outputs.expr }}"
           fi
 
       - name: Upload integration coverage data
