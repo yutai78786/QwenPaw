@@ -96,6 +96,97 @@ def _integration_coverage_requested() -> bool:
     )
 
 
+def _record_shutdown_forensics(
+    method: str,
+    outcome: str,
+    waited_s: float,
+) -> None:
+    """Forensics: record how each app subprocess was stopped.
+
+    Windows integration coverage is flushed via atexit on graceful
+    shutdown; escalating to ``terminate()`` (TerminateProcess) skips
+    atexit and loses the data. This appends one JSONL record per
+    shutdown to a per-worker file (xdist workers never contend) so the
+    controller can aggregate in ``pytest_sessionfinish``.
+
+    Forensics must never break a test run: all errors are swallowed.
+    """
+    if _INTEGRATION_COVERAGE_DIR is None:
+        return
+    try:
+        record = {
+            "platform": sys.platform,
+            "method": method,
+            "outcome": outcome,
+            "waited_s": round(waited_s, 2),
+            "worker_pid": os.getpid(),
+            "ts": round(time.time(), 2),
+        }
+        path = _INTEGRATION_COVERAGE_DIR / (
+            f"forensics_shutdown_{os.getpid()}.jsonl"
+        )
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+    except OSError:
+        pass
+
+
+def _print_shutdown_forensics(wd: Path) -> None:
+    """Forensics: aggregate per-worker shutdown records (method -> outcome)."""
+    outcomes: dict[str, int] = {}
+    samples: list[str] = []
+    for fpath in sorted(wd.glob("forensics_shutdown_*.jsonl")):
+        try:
+            lines = fpath.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            key = f"{rec.get('method')}->{rec.get('outcome')}"
+            outcomes[key] = outcomes.get(key, 0) + 1
+            if len(samples) < 5:
+                samples.append(json.dumps(rec, ensure_ascii=False))
+    print(
+        "[integration coverage] shutdown forensics: "
+        f"{outcomes if outcomes else 'no records'}",
+        flush=True,
+    )
+    for sample in samples:
+        print(f"[integration coverage] sample record: {sample}", flush=True)
+
+
+def _print_combined_data_stats(wd: Path) -> None:
+    """Forensics: measure the combined data file.
+
+    A file that exists but carries zero executed lines is the
+    silent-empty signature this project hunts (artifact uploads fine,
+    merged report hides it).
+    """
+    try:
+        # pylint: disable-next=import-outside-toplevel
+        from coverage import CoverageData
+
+        data = CoverageData(
+            basename=str(wd / _COVERAGE_SUBPROC_BASENAME),
+        )
+        data.read()
+        measured = data.measured_files()
+        total_lines = sum(len(data.lines(f) or []) for f in measured)
+        print(
+            "[integration coverage] combined data: "
+            f"{len(measured)} files, {total_lines} executed lines",
+            flush=True,
+        )
+    except Exception as exc:  # pylint: disable=broad-except
+        print(
+            f"[integration coverage] data inspection failed: {exc}",
+            flush=True,
+        )
+
+
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Prepare directory and config for subprocess coverage when requested."""
     global _INTEGRATION_COVERAGE_DIR
@@ -136,6 +227,17 @@ def pytest_sessionfinish(  # pylint: disable=unused-argument
         )
         return
 
+    # Forensics: list parallel data files (name + size) before combine so
+    # empty/missing flushes are visible even when combine "succeeds".
+    data_files = sorted(wd.glob(f"{_COVERAGE_SUBPROC_BASENAME}*"))
+    listing = ", ".join(f"{p.name}({p.stat().st_size}B)" for p in data_files)
+    print(
+        f"[integration coverage] data files before combine: {listing}",
+        flush=True,
+    )
+
+    _print_shutdown_forensics(wd)
+
     combine = subprocess.run(
         [
             sys.executable,
@@ -157,6 +259,8 @@ def pytest_sessionfinish(  # pylint: disable=unused-argument
             flush=True,
         )
         return
+
+    _print_combined_data_stats(wd)
 
     root = Path(session.config.rootpath).resolve()
     html_dir = root / "htmlcov-integration"
@@ -461,6 +565,16 @@ def app_server(  # pylint: disable=too-many-statements,too-many-branches
                 # CREATE_NEW_PROCESS_GROUP and send CTRL_BREAK_EVENT so
                 # the child can run atexit / flush coverage data.
                 # Without coverage we use terminate() for fast shutdown.
+                if sys.platform == "win32":
+                    shutdown_method = (
+                        "ctrl_break"
+                        if _integration_coverage_requested()
+                        else "terminate"
+                    )
+                else:
+                    shutdown_method = "sigint"
+                shutdown_started = time.time()
+                shutdown_outcome = "clean"
                 try:
                     if sys.platform == "win32":
                         if _integration_coverage_requested():
@@ -471,10 +585,18 @@ def app_server(  # pylint: disable=too-many-statements,too-many-branches
                         process.send_signal(signal.SIGINT)
                     process.wait(timeout=15)
                 except subprocess.TimeoutExpired:
+                    shutdown_outcome = "escalated-terminate"
                     process.terminate()
                     try:
                         process.wait(timeout=5)
                     except subprocess.TimeoutExpired:
+                        shutdown_outcome = "escalated-kill"
                         process.kill()
                         process.wait(timeout=5)
+                if _integration_coverage_requested():
+                    _record_shutdown_forensics(
+                        method=shutdown_method,
+                        outcome=shutdown_outcome,
+                        waited_s=time.time() - shutdown_started,
+                    )
             log_thread.join(timeout=2)

@@ -320,6 +320,28 @@ jobs:
               # tolerate that — the combined value is what matters.
               coverage xml --data-file=.coverage.integration \
                 -o coverage.integration.xml || [ "$?" -eq 2 ]
+              # Forensics (Windows zero-coverage project, phase 0): report
+              # how many lines the combined data file actually measured.
+              # Zero executed lines while collection was enabled is the
+              # silent-empty signature — surface it as an error annotation
+              # (observation only in phase 0; becomes a hard gate once the
+              # root cause is fixed).
+              python - <<'PY'
+          from coverage import CoverageData
+
+          data = CoverageData(basename=".coverage.integration")
+          data.read()
+          files = data.measured_files()
+          total = sum(len(data.lines(f) or []) for f in files)
+          msg = (
+              f"integration coverage data: "
+              f"{len(files)} files, {total} executed lines"
+          )
+          if total == 0:
+              print("::error::" + msg + " (collection enabled, 0 lines)")
+          else:
+              print(msg)
+          PY
             else
               echo "::warning::Integration coverage data file missing despite QWENPAW_INTEGRATION_COVERAGE=1 (session may have crashed before coverage flush)"
             fi
