@@ -77,6 +77,13 @@ def _write_integration_subprocess_rc(root: Path, dest_ini: Path) -> None:
         "parallel = true\n"
         "branch = false\n"
         f"source = {src_qwenpaw}\n"
+        # Forensics: per-file trace dispositions + config/sys context.
+        # Output goes to COVERAGE_DEBUG_FILE (set per app subprocess by
+        # the fixture), harvested at teardown.
+        "debug =\n"
+        "    trace\n"
+        "    config\n"
+        "    sys\n"
         "omit =\n"
         "    */tests/*\n"
         "    */test_*\n"
@@ -100,6 +107,7 @@ def _record_shutdown_forensics(
     method: str,
     outcome: str,
     waited_s: float,
+    extra: dict[str, Any] | None = None,
 ) -> None:
     """Forensics: record how each app subprocess was stopped.
 
@@ -114,7 +122,7 @@ def _record_shutdown_forensics(
     if _INTEGRATION_COVERAGE_DIR is None:
         return
     try:
-        record = {
+        record: dict[str, Any] = {
             "platform": sys.platform,
             "method": method,
             "outcome": outcome,
@@ -122,6 +130,8 @@ def _record_shutdown_forensics(
             "worker_pid": os.getpid(),
             "ts": round(time.time(), 2),
         }
+        if extra:
+            record.update(extra)
         path = _INTEGRATION_COVERAGE_DIR / (
             f"forensics_shutdown_{os.getpid()}.jsonl"
         )
@@ -129,6 +139,51 @@ def _record_shutdown_forensics(
             fh.write(json.dumps(record) + "\n")
     except OSError:
         pass
+
+
+def _collect_app_forensics(
+    port: int,
+    pre_files: set[str],
+) -> dict[str, Any]:
+    """Forensics: harvest per-app evidence right after the app exits.
+
+    Records which parallel data files this app instance produced (diff
+    against the pre-launch snapshot) and distills its coverage debug
+    log (trace dispositions for qwenpaw files).
+    """
+    extra: dict[str, Any] = {"app_port": port}
+    if _INTEGRATION_COVERAGE_DIR is None:
+        return extra
+    try:
+        current = {
+            p.name: p.stat().st_size
+            for p in _INTEGRATION_COVERAGE_DIR.glob(
+                f"{_COVERAGE_SUBPROC_BASENAME}*",
+            )
+        }
+        extra["new_data_files"] = {
+            n: s for n, s in current.items() if n not in pre_files
+        }
+        debug_log = _INTEGRATION_COVERAGE_DIR / (f"coverage_debug_{port}.log")
+        if not debug_log.exists():
+            extra["debug_log_size"] = 0
+            return extra
+        extra["debug_log_size"] = debug_log.stat().st_size
+        head_lines: list[str] = []
+        qwenpaw_lines: list[str] = []
+        with debug_log.open(encoding="utf-8", errors="replace") as fh:
+            for i, line in enumerate(fh):
+                stripped = line.rstrip("\n")[:300]
+                if i < 20:
+                    head_lines.append(stripped)
+                if "qwenpaw" in stripped.lower():
+                    qwenpaw_lines.append(stripped)
+        extra["debug_head"] = head_lines
+        extra["debug_qwenpaw_count"] = len(qwenpaw_lines)
+        extra["debug_qwenpaw_excerpt"] = qwenpaw_lines[:40]
+    except OSError:
+        pass
+    return extra
 
 
 def _print_shutdown_forensics(wd: Path) -> None:
@@ -200,6 +255,8 @@ def pytest_sessionstart(session: pytest.Session) -> None:
             f"{_COVERAGE_SUBPROC_BASENAME}*",
         ):
             p.unlink(missing_ok=True)
+        for p in _INTEGRATION_COVERAGE_DIR.glob("coverage_debug_*.log"):
+            p.unlink(missing_ok=True)
     _write_integration_subprocess_rc(
         root,
         _INTEGRATION_COVERAGE_DIR / _COVERAGE_RCFILE_NAME,
@@ -233,6 +290,18 @@ def pytest_sessionfinish(  # pylint: disable=unused-argument
     listing = ", ".join(f"{p.name}({p.stat().st_size}B)" for p in data_files)
     print(
         f"[integration coverage] data files before combine: {listing}",
+        flush=True,
+    )
+
+    # Forensics: per-app coverage debug logs (present = the subprocess
+    # coverage hook ran; size ~0 or missing = hook never fired).
+    debug_logs = sorted(wd.glob("coverage_debug_*.log"))
+    debug_listing = ", ".join(
+        f"{p.name}({p.stat().st_size}B)" for p in debug_logs
+    )
+    print(
+        "[integration coverage] per-app debug logs: "
+        f"{debug_listing if debug_listing else 'none'}",
         flush=True,
     )
 
@@ -471,6 +540,11 @@ def app_server(  # pylint: disable=too-many-statements,too-many-branches
         env["COVERAGE_FILE"] = str(
             _INTEGRATION_COVERAGE_DIR / _COVERAGE_SUBPROC_BASENAME,
         )
+        # Forensics: per-app coverage debug output (trace dispositions,
+        # config, sys). Unique per app instance (port is unique).
+        env["COVERAGE_DEBUG_FILE"] = str(
+            _INTEGRATION_COVERAGE_DIR / f"coverage_debug_{port}.log",
+        )
 
     logs: list[str] = []
     # Windows + subprocess coverage: create a new process group so the
@@ -479,6 +553,16 @@ def app_server(  # pylint: disable=too-many-statements,too-many-branches
     popen_kwargs: dict[str, Any] = {}
     if sys.platform == "win32" and _integration_coverage_requested():
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    # Forensics snapshot: parallel data files present before this app
+    # launches, so teardown can attribute new files to this instance.
+    pre_files: set[str] = set()
+    if _integration_coverage_requested() and _INTEGRATION_COVERAGE_DIR:
+        pre_files = {
+            p.name
+            for p in _INTEGRATION_COVERAGE_DIR.glob(
+                f"{_COVERAGE_SUBPROC_BASENAME}*",
+            )
+        }
     with subprocess.Popen(
         [
             sys.executable,
@@ -556,6 +640,9 @@ def app_server(  # pylint: disable=too-many-statements,too-many-branches
             )
         finally:
             client.close()
+            shutdown_method = "already-exited"
+            shutdown_outcome = "none"
+            shutdown_waited = 0.0
             if process.poll() is None:
                 # On POSIX, SIGINT lets uvicorn shut down cleanly so
                 # subprocess coverage data flushes (SIGTERM often skips
@@ -593,10 +680,12 @@ def app_server(  # pylint: disable=too-many-statements,too-many-branches
                         shutdown_outcome = "escalated-kill"
                         process.kill()
                         process.wait(timeout=5)
-                if _integration_coverage_requested():
-                    _record_shutdown_forensics(
-                        method=shutdown_method,
-                        outcome=shutdown_outcome,
-                        waited_s=time.time() - shutdown_started,
-                    )
+                shutdown_waited = time.time() - shutdown_started
+            if _integration_coverage_requested():
+                _record_shutdown_forensics(
+                    method=shutdown_method,
+                    outcome=shutdown_outcome,
+                    waited_s=shutdown_waited,
+                    extra=_collect_app_forensics(port, pre_files),
+                )
             log_thread.join(timeout=2)
