@@ -1,0 +1,66 @@
+# One-off stress harness: re-run a single (formerly flaky) unit test many
+# times on fresh CI runners WITHOUT running the full suite.
+#
+# Trigger: push to a stress/** branch. The job loops the single test
+# REPEAT times in one run; any single iteration red = whole run red.
+name: Stress Repeat Test
+
+on:
+  push:
+    branches:
+      - "stress/**"
+  workflow_dispatch:
+    inputs:
+      repeat:
+        description: "How many times to re-run the test"
+        required: false
+        default: "20"
+
+jobs:
+  repeat:
+    name: Repeat test (py${{ matrix.python-version }} / ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.11"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,test]"
+
+      - name: Repeat the single test
+        shell: bash
+        env:
+          NODE: "tests/unit/agents/tools/test_shell.py::test_sandbox_slow_setup_does_not_consume_offload_budget"
+        run: |
+          REPEAT="${{ inputs.repeat || '20' }}"
+          pass=0
+          fail=0
+          for i in $(seq 1 "$REPEAT"); do
+            if python -m pytest "$NODE" -q --tb=short >/dev/null 2>&1; then
+              pass=$((pass+1))
+              echo "iter $i: PASS"
+            else
+              fail=$((fail+1))
+              echo "iter $i: FAIL"
+              python -m pytest "$NODE" --tb=short || true
+            fi
+          done
+          echo "=============================================="
+          echo "TOTAL: $pass passed / $fail failed out of $REPEAT"
+          echo "=============================================="
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
