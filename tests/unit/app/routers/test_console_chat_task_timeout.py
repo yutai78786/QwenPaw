@@ -88,6 +88,30 @@ def test_background_cancel_error_distinguishes_timeout() -> None:
     assert cancelled == {"message": "Task cancelled"}
 
 
+def test_background_cancel_error_uses_typed_reason_fallback() -> None:
+    """reason=timeout must yield the timeout payload even without the flag.
+
+    Covers cancellation observed only through the typed CancelledError
+    message (e.g. nested cancellation before the guard flag was set).
+    """
+    from qwenpaw.utils.cancellation import CANCEL_REASON_USER_STOP
+
+    via_reason = _background_task_cancel_error(
+        timed_out=False,
+        timeout_seconds=30,
+        reason="timeout",
+    )
+    assert via_reason["code"] == "timeout"
+    assert via_reason["message"] == "Task timed out after 30s"
+
+    user_stop = _background_task_cancel_error(
+        timed_out=False,
+        timeout_seconds=30,
+        reason=CANCEL_REASON_USER_STOP,
+    )
+    assert user_stop == {"message": "Task cancelled"}
+
+
 @pytest.fixture(autouse=True)
 def _clear_bg_tasks():
     console_mod._bg_tasks.clear()
@@ -361,3 +385,71 @@ async def test_chat_task_manual_cancel_is_not_timeout(
     error = (last.get("result") or {}).get("error") or {}
     assert error.get("message") == "Task cancelled"
     assert "code" not in error
+
+
+async def test_chat_task_timeout_propagates_typed_reason_into_stream(
+    app,
+    console_workspace,
+    monkeypatch,
+):
+    """Timeout cancel must carry reason=timeout down to the stream layer.
+
+    Workspace run observers (metrics) observe the CancelledError at
+    ``Workspace.stream_query`` — this test pins the production contract:
+    after the timeout guard fires, the stream sees a typed cancellation
+    reason ``timeout`` (P-1, ACS monitoring v2.0).
+    """
+    from qwenpaw.utils.cancellation import extract_cancellation_reason
+
+    observed: dict = {}
+
+    async def _observing_stream(_payload):
+        try:
+            await asyncio.sleep(60)
+            for _ in ():
+                yield ""
+        except asyncio.CancelledError as exc:
+            observed["reason"] = extract_cancellation_reason(exc)
+            raise
+
+    console_workspace.console_channel.stream_one = _observing_stream
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(delay, result=None):
+        # Collapse the production timeout sleep; keep other sleeps real.
+        if delay == 1:
+            await real_sleep(0.01)
+            return result
+        return await real_sleep(delay, result=result)
+
+    monkeypatch.setattr(console_mod.asyncio, "sleep", _fast_sleep)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+    ) as ac:
+        response = await ac.post(
+            "/api/console/chat/task",
+            json=_chat_task_body(timeout=1),
+        )
+        assert response.status_code == 200, response.text
+        task_id = response.json()["task_id"]
+
+        deadline = time.time() + 3.0
+        last = None
+        while time.time() < deadline:
+            status = await ac.get(f"/api/console/chat/task/{task_id}")
+            assert status.status_code == 200, status.text
+            last = status.json()
+            if last.get("status") == "finished":
+                break
+            await asyncio.sleep(0.02)
+
+    assert last is not None and last["status"] == "finished", last
+    # The stream layer saw the typed timeout reason.
+    assert observed.get("reason") == "timeout", observed
+    # And the task result still reports timeout end-to-end.
+    error = (last.get("result") or {}).get("error") or {}
+    assert error.get("code") == "timeout"

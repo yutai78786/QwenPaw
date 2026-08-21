@@ -27,6 +27,11 @@ from qwenpaw.schemas import (
     AgentRequest,
     _coerce_content_item,
 )
+from qwenpaw.utils.cancellation import (
+    CANCEL_REASON_TIMEOUT,
+    cancel_with_reason,
+    extract_cancellation_reason,
+)
 from qwenpaw.utils.timeout import resolve_stream_task_timeout
 from ...utils.logging import LOG_FILE_PATH, sanitize_log_value
 from ..agent_context import get_agent_for_request
@@ -81,9 +86,16 @@ def _background_task_cancel_error(
     *,
     timed_out: bool,
     timeout_seconds: int,
+    reason: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build the error payload for a cancelled background chat task."""
-    if timed_out:
+    """Build the error payload for a cancelled background chat task.
+
+    ``timed_out`` (guard flag) wins; ``reason`` — the typed cancellation
+    reason recovered from the ``CancelledError`` — is the fallback when
+    the flag was not set (e.g. nested cancellation before the guard
+    fired).
+    """
+    if timed_out or reason == CANCEL_REASON_TIMEOUT:
         return {
             "message": f"Task timed out after {timeout_seconds}s",
             "code": "timeout",
@@ -904,10 +916,15 @@ async def post_console_chat_task(  # pylint: disable=too-many-statements
                         },
                     }
                     return
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as cancel_exc:
+            nonlocal timed_out
+            typed_reason = extract_cancellation_reason(cancel_exc)
+            if typed_reason == CANCEL_REASON_TIMEOUT:
+                timed_out = True
             cancel_error = _background_task_cancel_error(
                 timed_out=timed_out,
                 timeout_seconds=effective_timeout,
+                reason=typed_reason,
             )
             bg.status = "finished"
             bg.finished_at = time.time()
@@ -968,7 +985,9 @@ async def post_console_chat_task(  # pylint: disable=too-many-statements
             return
         if not atask.done():
             timed_out = True
-            atask.cancel()
+            # Typed cancellation: observers (e.g. run metrics) distinguish
+            # timeout from user stop via the CancelledError message.
+            cancel_with_reason(atask, CANCEL_REASON_TIMEOUT)
 
     guard_task = asyncio.create_task(_timeout_guard())
 

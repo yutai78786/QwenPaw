@@ -213,6 +213,85 @@ async def test_request_stop_cancels_live_run():
 
 
 @pytest.mark.asyncio
+async def test_request_stop_carries_typed_user_stop_reason():
+    """User stops must surface ``reason=user_stop`` inside the stream.
+
+    Run observers (metrics) rely on this typed reason to tell user stops
+    apart from timeout cancellations.
+    """
+    tracker = TaskTracker()
+    started = asyncio.Event()
+    observed: dict = {}
+
+    async def long_stream(_payload):
+        started.set()
+        try:
+            await asyncio.sleep(60)
+            yield "never"
+        except asyncio.CancelledError as exc:
+            observed["args"] = exc.args
+            raise
+
+    await tracker.attach_or_start(
+        "run-stop-reason",
+        payload=None,
+        stream_fn=long_stream,
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    assert await tracker.request_stop("run-stop-reason") is True
+    await asyncio.sleep(0.05)
+
+    from qwenpaw.utils.cancellation import (
+        CANCEL_REASON_USER_STOP,
+        extract_cancellation_reason,
+    )
+
+    reason = extract_cancellation_reason(
+        asyncio.CancelledError(*observed["args"]),
+    )
+    assert reason == CANCEL_REASON_USER_STOP
+
+
+@pytest.mark.asyncio
+async def test_request_stop_custom_reason_overrides_default():
+    """Callers (e.g. a timeout guard) may pass their own typed reason."""
+    tracker = TaskTracker()
+    started = asyncio.Event()
+    observed: dict = {}
+
+    async def long_stream(_payload):
+        started.set()
+        try:
+            await asyncio.sleep(60)
+            yield "never"
+        except asyncio.CancelledError as exc:
+            observed["args"] = exc.args
+            raise
+
+    await tracker.attach_or_start(
+        "run-stop-custom",
+        payload=None,
+        stream_fn=long_stream,
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    stopped = await tracker.request_stop(
+        "run-stop-custom",
+        reason="timeout",
+    )
+    assert stopped is True
+    await asyncio.sleep(0.05)
+
+    from qwenpaw.utils.cancellation import extract_cancellation_reason
+
+    reason = extract_cancellation_reason(
+        asyncio.CancelledError(*observed["args"]),
+    )
+    assert reason == "timeout"
+
+
+@pytest.mark.asyncio
 async def test_request_stop_returns_false_when_no_run():
     tracker = TaskTracker()
 

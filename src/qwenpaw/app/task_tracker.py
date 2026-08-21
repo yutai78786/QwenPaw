@@ -15,6 +15,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Callable, Coroutine, Optional
 
+from qwenpaw.utils.cancellation import (
+    CANCEL_REASON_USER_STOP,
+    cancel_with_reason,
+)
+
 logger = logging.getLogger(__name__)
 
 _SENTINEL = None
@@ -213,8 +218,18 @@ class TaskTracker:
             except ValueError:
                 pass
 
-    async def request_stop(self, run_key: str) -> bool:
-        """Cancel the run. Returns ``True`` if it was running."""
+    async def request_stop(
+        self,
+        run_key: str,
+        *,
+        reason: str = CANCEL_REASON_USER_STOP,
+    ) -> bool:
+        """Cancel the run. Returns ``True`` if it was running.
+
+        The cancellation carries typed *reason* on the ``CancelledError``
+        (see :mod:`qwenpaw.utils.cancellation`) so run observers can tell
+        user stops apart from other cancel sources such as timeouts.
+        """
         logger.debug("[STOP] request_stop called for run_key=%s", run_key)
         async with self._lock:
             state = self._runs.get(run_key)
@@ -235,7 +250,7 @@ class TaskTracker:
                 run_key,
             )
             task = state.task
-            task.cancel()
+            cancel_with_reason(task, reason)
             logger.debug("[STOP] task.cancel() called for run_key=%s", run_key)
         try:
             await task
