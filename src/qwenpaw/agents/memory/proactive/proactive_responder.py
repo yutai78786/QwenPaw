@@ -317,6 +317,11 @@ async def send_proactive_message_via_http(
     }
 
     headers = {"X-Agent-Id": active_agent_id}
+    # W3C Trace Context links this proactive dispatch to the caller's
+    # span; no-op when no span is active.
+    from ....observability.propagation import inject_trace_context
+
+    inject_trace_context(headers)
     timeout_config = aiohttp.ClientTimeout(total=timeout_seconds)
 
     base_url = resolve_agent_api_base_url()

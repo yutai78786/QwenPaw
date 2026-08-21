@@ -265,10 +265,14 @@ def _request_headers(
     Returns:
         Dictionary of HTTP headers
     """
+    from ...observability.propagation import inject_trace_context
+
     headers = {}
     if to_agent:
         headers["X-Agent-Id"] = to_agent
-    return headers
+    # W3C Trace Context (traceparent/tracestate) links the child-agent
+    # run to the caller's span; no-op when no span is active.
+    return inject_trace_context(headers)
 
 
 def stream_agent_chat(
