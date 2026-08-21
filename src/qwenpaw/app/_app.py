@@ -577,9 +577,31 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
 
     _bg_task = asyncio.create_task(_background_startup())
 
+    # ================================================================
+    # ACS monitoring (QPQAT, v2.0 §5.1): dedicated metrics server on
+    # 9090 (/metrics + /healthz only). Off by default; a bind failure
+    # degrades to a warning and never blocks the business API.
+    # ================================================================
+    metrics_server = None
+    if metrics_enabled():
+        from ..observability.metrics.server import MetricsServer
+
+        metrics_server = MetricsServer()
+        if await metrics_server.start():
+            app.state.metrics_server = metrics_server
+        else:
+            metrics_server = None
+
     try:
         yield
     finally:
+        # Shutdown order contract (v2.0 §5.1): the metrics server is
+        # stopped FIRST so in-flight scrapes never race the business
+        # teardown below.
+        if metrics_server is not None:
+            await metrics_server.stop()
+            app.state.metrics_server = None
+
         # Cancel background startup if still in progress
         if not _bg_task.done():
             _bg_task.cancel()
@@ -706,6 +728,18 @@ register_exception_handlers(app)
 app.add_middleware(AgentContextMiddleware)
 
 app.add_middleware(AuthMiddleware)
+
+# ACS monitoring (QPQAT, v2.0 §2): HTTP metrics middleware is mounted
+# only when explicitly enabled; a default deployment pays zero overhead.
+# pylint: disable-next=wrong-import-position,wrong-import-order
+from ..observability.metrics.config import metrics_enabled  # noqa: E402
+
+if metrics_enabled():
+    from ..observability.metrics.http_middleware import (  # noqa: E402
+        HttpMetricsMiddleware,
+    )
+
+    app.add_middleware(HttpMetricsMiddleware)
 
 # Apply CORS middleware if CORS_ORIGINS is set
 if CORS_ORIGINS:

@@ -321,7 +321,38 @@ class Workspace:
         """Process a request through the Runtime pipeline.
 
         Drop-in replacement for the old ``Runner.stream_query()``.
+
+        When ACS metrics are enabled (``QPQAT_METRICS_ENABLED``) every
+        run is observed here — the single funnel for ACP/cron/
+        heartbeat/PawApp/Voice — recording outcome, duration, TTFT and
+        active-run gauge (v2.0 §3). Events pass through unchanged.
         """
+        from ...observability.metrics.config import metrics_enabled
+
+        if metrics_enabled():
+            from ...observability.metrics.allowlist import map_channel
+            from ...observability.metrics.run_observer import (
+                observe_stream_query,
+            )
+
+            channel_label = map_channel(
+                getattr(request, "channel", None) or "console",
+            )
+            async for item in observe_stream_query(
+                channel_label,
+                self._stream_query_core(request),
+            ):
+                yield item
+            return
+
+        async for item in self._stream_query_core(request):
+            yield item
+
+    async def _stream_query_core(
+        self,
+        request: Any,
+    ) -> AsyncGenerator[Any, None]:
+        """Core pipeline dispatch (native Runtime vs external backend)."""
         config = load_agent_config(self.agent_id)
         backend = config.backend
         if backend != "qwenpaw":

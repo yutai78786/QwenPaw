@@ -72,6 +72,10 @@ dependencies = [
     "html2text>=2024.2.26",
     "mcp>=1.28,<2.0",
     "imap-tools>=1.13,<2.0",
+    # ACS monitoring (QPQAT): Prometheus metrics exposition on the
+    # dedicated 9090 metrics server. Pinned conservatively; the
+    # observability module uses only the stable core API.
+    "prometheus-client>=0.20,<0.27",
 ]
 
 [project.urls]
