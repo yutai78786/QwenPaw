@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator, AsyncIterator
 
@@ -768,6 +769,64 @@ class RetryChatModel(ChatModelBase):
         )
 
     async def __call__(
+        self,
+        *args: Any,
+        **kwargs: Any,
+    ) -> ChatResponse | AsyncGenerator[ChatResponse, None]:
+        """Dispatch the call, observing ACS LLM metrics when enabled.
+
+        When ``QPQAT_METRICS_ENABLED`` is off this is a direct pass
+        through to :meth:`_call_core` with zero overhead. When on, one
+        logical call produces exactly one ``qwenpaw_llm_calls_total``
+        sample (retries are transparent) plus duration and token
+        counters — see :mod:`qwenpaw.observability.metrics.llm_observer`
+        for the status/token calibre contract (v2.0 §2.1/§2.2).
+        """
+        # pylint: disable-next=import-outside-toplevel
+        from ..observability.metrics.config import metrics_enabled
+
+        if not metrics_enabled():
+            return await self._call_core(*args, **kwargs)
+
+        # pylint: disable-next=import-outside-toplevel
+        from ..observability.metrics.allowlist import map_model_family
+
+        # pylint: disable-next=import-outside-toplevel
+        from ..observability.metrics.llm_observer import (
+            STATUS_ERROR,
+            STATUS_SUCCESS,
+            observe_llm_stream,
+            record_llm_call,
+        )
+
+        family = map_model_family(self.model)
+        started_at = time.perf_counter()
+        try:
+            result = await self._call_core(*args, **kwargs)
+        except BaseException:
+            # Final failure: retries exhausted, non-retryable error,
+            # acquire timeout or cancellation before any response.
+            record_llm_call(
+                family,
+                STATUS_ERROR,
+                time.perf_counter() - started_at,
+            )
+            raise
+
+        if isinstance(result, AsyncGenerator):
+            # Stream: the observer records exactly once at stream end
+            # (success with tokens, or error on any termination).
+            return observe_llm_stream(family, result, started_at)
+
+        record_llm_call(
+            family,
+            STATUS_SUCCESS,
+            time.perf_counter() - started_at,
+            getattr(result, "usage", None),
+        )
+        return result
+
+    async def _call_core(
         self,
         *args: Any,
         **kwargs: Any,
