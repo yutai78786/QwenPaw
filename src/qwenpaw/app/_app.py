@@ -40,6 +40,7 @@ from ..utils.startup_display import AgentStartupDisplay
 from ..utils.system_info import summarize_python_environment
 from .auth import (
     AuthMiddleware,
+    RuntimeBoundaryMiddleware,
     auto_register_from_env,
     check_proxy_config_sanity,
 )
@@ -749,6 +750,7 @@ register_exception_handlers(app)
 app.add_middleware(AgentContextMiddleware)
 
 app.add_middleware(AuthMiddleware)
+app.add_middleware(RuntimeBoundaryMiddleware)
 
 # ACS monitoring (QPQAT, v2.0 §2): HTTP metrics middleware is mounted
 # only when explicitly enabled; a default deployment pays zero overhead.
