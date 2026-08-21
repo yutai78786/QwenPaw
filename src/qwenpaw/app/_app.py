@@ -155,6 +155,19 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
     auto_register_from_env()
     check_proxy_config_sanity()
 
+    # ================================================================
+    # ACS monitoring tracing (QPQAT, v2.0 §4): install the SDK tracer
+    # provider with OTLP export. Off by default (QPQAT_TRACING_ENABLED
+    # = false); setup never raises — misconfiguration degrades to
+    # dropped spans with a warning.
+    # ================================================================
+    from ..observability.tracing.config import tracing_enabled
+
+    if tracing_enabled():
+        from ..observability.tracing.setup import setup_tracing
+
+        setup_tracing()
+
     try:
         from ..utils.telemetry import (
             collect_and_upload_telemetry,
@@ -602,6 +615,14 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
             await metrics_server.stop()
             app.state.metrics_server = None
 
+        # ACS monitoring tracing (QPQAT, v2.0 §4): flush and shut down
+        # the tracer provider AFTER the metrics server stops, so
+        # in-flight spans are exported before process teardown.
+        if tracing_enabled():
+            from ..observability.tracing.setup import shutdown_tracing
+
+            shutdown_tracing()
+
         # Cancel background startup if still in progress
         if not _bg_task.done():
             _bg_task.cancel()
@@ -740,6 +761,20 @@ if metrics_enabled():
     )
 
     app.add_middleware(HttpMetricsMiddleware)
+
+# ACS monitoring tracing (QPQAT, v2.0 §4.2): inbound W3C trace-context
+# extraction + SERVER spans. Mounted only when enabled; default
+# deployments pay zero overhead. Must sit BELOW the metrics middleware
+# (added later = runs first) so SERVER spans nest under nothing.
+# pylint: disable-next=wrong-import-position,wrong-import-order
+from ..observability.tracing.config import tracing_enabled  # noqa: E402
+
+if tracing_enabled():
+    from ..observability.tracing.http_middleware import (  # noqa: E402
+        HttpTracingMiddleware,
+    )
+
+    app.add_middleware(HttpTracingMiddleware)
 
 # Apply CORS middleware if CORS_ORIGINS is set
 if CORS_ORIGINS:

@@ -1238,6 +1238,23 @@ class AgentBuilder:
         if tool_coordinator is None and pruning_middleware is not None:
             mws.append(pruning_middleware)
 
+        # ACS monitoring tracing (QPQAT, v2.0 §4.1): metadata-only span
+        # middleware, mounted only when QPQAT_TRACING_ENABLED is true.
+        try:
+            from ..observability.tracing.config import tracing_enabled
+
+            if tracing_enabled():
+                from ..observability.tracing.middleware import (
+                    MetadataOnlyTracingMiddleware,
+                )
+
+                mws.append(MetadataOnlyTracingMiddleware())
+        except Exception:
+            _logger.debug(
+                "MetadataOnlyTracingMiddleware not created",
+                exc_info=True,
+            )
+
         # Langfuse tool observability
         try:
             from ..observability.langfuse import is_langfuse_enabled
