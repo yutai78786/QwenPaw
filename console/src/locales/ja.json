@@ -1526,7 +1526,10 @@
   "tokenUsage": {
     "title": "Token 使用量",
     "totalTokens": "合計 Token",
-    "totalCalls": "総呼び出し回数",
+    "totalCalls": "LLM呼び出し",
+    "byAgent": "エージェント別",
+    "agent": "エージェント",
+    "unattributed": "未帰属",
     "promptTokens": "入力 Token",
     "completionTokens": "出力 Token",
     "byModel": "モデル別",

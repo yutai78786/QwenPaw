@@ -1526,7 +1526,10 @@
   "tokenUsage": {
     "title": "Использование токенов",
     "totalTokens": "Всего токенов",
-    "totalCalls": "Всего вызовов",
+    "totalCalls": "Вызовы LLM",
+    "byAgent": "По агентам",
+    "agent": "Агент",
+    "unattributed": "Без атрибуции",
     "promptTokens": "Входные токены",
     "completionTokens": "Выходные токены",
     "byModel": "По модели",

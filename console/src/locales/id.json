@@ -2154,7 +2154,10 @@
   "tokenUsage": {
     "title": "Penggunaan Token",
     "totalTokens": "Total Token",
-    "totalCalls": "Total Panggilan",
+    "totalCalls": "Panggilan LLM",
+    "byAgent": "Berdasarkan Agen",
+    "agent": "Agen",
+    "unattributed": "Tidak teratribusi",
     "promptTokens": "Token Prompt",
     "completionTokens": "Token Completion",
     "byModel": "Berdasarkan Model",

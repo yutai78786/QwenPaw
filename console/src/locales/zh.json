@@ -1792,7 +1792,10 @@
   "tokenUsage": {
     "title": "Token 消耗",
     "totalTokens": "总 Token",
-    "totalCalls": "总调用次数",
+    "totalCalls": "LLM 调用",
+    "byAgent": "按智能体",
+    "agent": "智能体",
+    "unattributed": "未归属",
     "promptTokens": "输入 Token",
     "completionTokens": "输出 Token",
     "byModel": "按模型",

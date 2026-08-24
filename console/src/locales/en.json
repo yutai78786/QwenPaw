@@ -2001,7 +2001,10 @@
   "tokenUsage": {
     "title": "Token Usage",
     "totalTokens": "Total Tokens",
-    "totalCalls": "Total Calls",
+    "totalCalls": "LLM Calls",
+    "byAgent": "By Agent",
+    "agent": "Agent",
+    "unattributed": "Unattributed",
     "promptTokens": "Prompt Tokens",
     "completionTokens": "Completion Tokens",
     "byModel": "By Model",

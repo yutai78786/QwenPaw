@@ -1467,6 +1467,10 @@
     "promptTokens": "Token đầu vào",
     "completionTokens": "Token đầu ra",
     "totalTokens": "Tổng token",
+    "totalCalls": "Lượt gọi LLM",
+    "byAgent": "Theo Agent",
+    "agent": "Agent",
+    "unattributed": "Chưa gán",
     "noData": "Chưa có dữ liệu",
     "period": "Khoảng thời gian"
   },
