@@ -214,7 +214,9 @@ describe("AppCenterPage", () => {
     renderPage(["/market?view=market"]);
 
     expect(
-      await screen.findByRole("button", { name: "appCenter.installed" }),
+      await screen.findByRole("button", {
+        name: "appCenter.installedStatus",
+      }),
     ).toBeDisabled();
     expect(screen.queryByText("appCenter.install")).not.toBeInTheDocument();
   });
@@ -246,7 +248,7 @@ describe("AppCenterPage", () => {
     await waitFor(() => expect(hoisted.listApps).toHaveBeenCalledTimes(1));
 
     const installedButton = await screen.findByRole("button", {
-      name: "appCenter.installed",
+      name: "appCenter.installedStatus",
     });
     expect(installedButton).toBeDisabled();
     fireEvent.click(installedButton);
@@ -264,6 +266,7 @@ describe("AppCenterPage", () => {
       name: "Alpha App",
     });
     renderPage(["/market?view=market"]);
+    await waitFor(() => expect(hoisted.listApps).toHaveBeenCalledTimes(1));
 
     const updateButton = await screen.findByRole("button", {
       name: "appCenter.update",
@@ -271,6 +274,7 @@ describe("AppCenterPage", () => {
     expect(updateButton).toBeEnabled();
     fireEvent.click(updateButton);
     await waitFor(() => expect(hoisted.installPlugin).toHaveBeenCalledTimes(1));
+    expect(hoisted.loadPawApp).not.toHaveBeenCalled();
   });
 
   it("returns to installed apps and preserves unrelated query params", async () => {

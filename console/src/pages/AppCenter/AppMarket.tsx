@@ -28,7 +28,6 @@ import {
 } from "lucide-react";
 import { useAppMessage } from "@/hooks/useAppMessage";
 import { openExternalLink } from "@/utils/openExternalLink";
-import { compareVersions } from "@/layouts/constants";
 import {
   buildMarketDownloadUrl,
   fetchMarketPlugins,
@@ -37,6 +36,7 @@ import {
 import { installPlugin, type InstallPluginResult } from "@/api/modules/plugin";
 import { rootApi } from "@/api/modules/root";
 import { isMarketPluginCompatible } from "@/utils/pluginCompatibility";
+import { getMarketAppState, type MarketAppState } from "@/utils/marketAppState";
 import styles from "./index.module.less";
 
 const { Text, Paragraph } = Typography;
@@ -119,19 +119,6 @@ interface AppMarketProps {
 }
 
 const EMPTY_INSTALLED_APP_VERSIONS: ReadonlyMap<string, string> = new Map();
-
-function getInstalledVersion(
-  entry: MarketPluginEntry,
-  installedAppVersions: ReadonlyMap<string, string>,
-): string | null {
-  const normalizedId = entry.id.startsWith("@") ? entry.id.slice(1) : entry.id;
-  const name = normalizedId.split("/").pop() ?? normalizedId;
-  for (const id of [entry.id, normalizedId, name]) {
-    const version = installedAppVersions.get(id);
-    if (version !== undefined) return version;
-  }
-  return null;
-}
 
 export function AppMarket({
   onInstalled,
@@ -461,14 +448,13 @@ export function AppMarket({
             <div className={styles.grid}>
               {plugins.map((entry) => {
                 const iconSrc = entry.logo_url || FEATURED_APP_ICONS[entry.id];
-                const installedVersion = getInstalledVersion(
+                const marketState: MarketAppState = getMarketAppState(
                   entry,
                   installedAppVersions,
+                  channel,
                 );
-                const isInstalled = installedVersion !== null;
-                const hasUpdate =
-                  isInstalled &&
-                  compareVersions(entry.version, installedVersion) > 0;
+                const isInstalled = marketState === "installed";
+                const canUpdate = marketState === "update";
                 return (
                   <Card key={entry.id} className={styles.appCard}>
                     <div className={styles.cardIcon}>
@@ -524,32 +510,30 @@ export function AppMarket({
                         className={`${styles.cardActions} ${styles.cardHoverActions}`}
                       >
                         <Button
-                          type={
-                            isInstalled && !hasUpdate ? "default" : "primary"
-                          }
+                          type={isInstalled ? "default" : "primary"}
                           icon={
-                            isInstalled && !hasUpdate ? (
+                            isInstalled ? (
                               <BadgeCheck size={14} />
-                            ) : hasUpdate ? (
+                            ) : canUpdate ? (
                               <RefreshCw size={14} />
                             ) : (
                               <Download size={14} />
                             )
                           }
-                          loading={installingId === entry.id}
+                          loading={!isInstalled && installingId === entry.id}
                           disabled={
-                            (isInstalled && !hasUpdate) ||
+                            isInstalled ||
                             !versionChecked ||
                             (installingId !== null && installingId !== entry.id)
                           }
                           onClick={() => requestInstall(entry)}
                         >
-                          {installingId === entry.id
-                            ? t("appCenter.installing", "安装中...")
-                            : isInstalled && !hasUpdate
-                            ? t("appCenter.installed", "Installed")
-                            : hasUpdate
+                          {isInstalled
+                            ? t("appCenter.installedStatus", "Installed")
+                            : canUpdate
                             ? t("appCenter.update", "Update")
+                            : installingId === entry.id
+                            ? t("appCenter.installing", "安装中...")
                             : t("appCenter.install", "安装")}
                         </Button>
                         <Button
