@@ -19,6 +19,7 @@ import {
 } from "antd";
 import {
   AppWindow,
+  BadgeCheck,
   Download,
   ExternalLink,
   RefreshCw,
@@ -27,6 +28,7 @@ import {
 } from "lucide-react";
 import { useAppMessage } from "@/hooks/useAppMessage";
 import { openExternalLink } from "@/utils/openExternalLink";
+import { compareVersions } from "@/layouts/constants";
 import {
   buildMarketDownloadUrl,
   fetchMarketPlugins,
@@ -112,11 +114,28 @@ function pickDescription(entry: MarketPluginEntry, language: string): string {
 
 interface AppMarketProps {
   onInstalled: (result: InstallPluginResult) => void | Promise<void>;
+  installedAppVersions?: ReadonlyMap<string, string>;
   channel?: "official" | "community";
+}
+
+const EMPTY_INSTALLED_APP_VERSIONS: ReadonlyMap<string, string> = new Map();
+
+function getInstalledVersion(
+  entry: MarketPluginEntry,
+  installedAppVersions: ReadonlyMap<string, string>,
+): string | null {
+  const normalizedId = entry.id.startsWith("@") ? entry.id.slice(1) : entry.id;
+  const name = normalizedId.split("/").pop() ?? normalizedId;
+  for (const id of [entry.id, normalizedId, name]) {
+    const version = installedAppVersions.get(id);
+    if (version !== undefined) return version;
+  }
+  return null;
 }
 
 export function AppMarket({
   onInstalled,
+  installedAppVersions = EMPTY_INSTALLED_APP_VERSIONS,
   channel = "community",
 }: AppMarketProps) {
   const { t, i18n } = useTranslation();
@@ -442,6 +461,14 @@ export function AppMarket({
             <div className={styles.grid}>
               {plugins.map((entry) => {
                 const iconSrc = entry.logo_url || FEATURED_APP_ICONS[entry.id];
+                const installedVersion = getInstalledVersion(
+                  entry,
+                  installedAppVersions,
+                );
+                const isInstalled = installedVersion !== null;
+                const hasUpdate =
+                  isInstalled &&
+                  compareVersions(entry.version, installedVersion) > 0;
                 return (
                   <Card key={entry.id} className={styles.appCard}>
                     <div className={styles.cardIcon}>
@@ -497,10 +524,21 @@ export function AppMarket({
                         className={`${styles.cardActions} ${styles.cardHoverActions}`}
                       >
                         <Button
-                          type="primary"
-                          icon={<Download size={14} />}
+                          type={
+                            isInstalled && !hasUpdate ? "default" : "primary"
+                          }
+                          icon={
+                            isInstalled && !hasUpdate ? (
+                              <BadgeCheck size={14} />
+                            ) : hasUpdate ? (
+                              <RefreshCw size={14} />
+                            ) : (
+                              <Download size={14} />
+                            )
+                          }
                           loading={installingId === entry.id}
                           disabled={
+                            (isInstalled && !hasUpdate) ||
                             !versionChecked ||
                             (installingId !== null && installingId !== entry.id)
                           }
@@ -508,6 +546,10 @@ export function AppMarket({
                         >
                           {installingId === entry.id
                             ? t("appCenter.installing", "安装中...")
+                            : isInstalled && !hasUpdate
+                            ? t("appCenter.installed", "Installed")
+                            : hasUpdate
+                            ? t("appCenter.update", "Update")
                             : t("appCenter.install", "安装")}
                         </Button>
                         <Button
