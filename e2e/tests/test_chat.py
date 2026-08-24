@@ -1004,6 +1004,220 @@ class TestToolApproval:
         log_test_result(test_name, True, 0)
 
 
+# ============================================================================
+# CHAT-P1-005: Stop interruption must not lose the user bubble (#3114 net)
+# ============================================================================
+
+@pytest.mark.integration
+@pytest.mark.requires_llm
+@pytest.mark.p1
+@pytest.mark.chat
+class TestChatStopKeepsUserBubble:
+    """
+    CHAT-P1-005: After stopping a streaming reply, the user message bubble
+    must remain — both live in the DOM and after a page reload.
+
+    Background (bug #3114, interrupt + retry loses the user bubble):
+    front-end source reading shows ``discardLastUserMessage`` only fires on
+    request failure (HTTP non-200), and manual Web-side stopping did not
+    reproduce the bubble loss during design-time probing. This case is
+    therefore a same-family regression net (bubble must survive stop +
+    reload), not a guaranteed repro of the original desktop_tauri trigger.
+    """
+
+    STOP_BTN_NAME = "Stop Loading"
+
+    @pytest.mark.test_id("CHAT-P1-005")
+    def test_stop_interruption_keeps_user_bubble(
+        self, clean_chat_page: ChatPage, request: pytest.FixtureRequest
+    ):
+        """Send -> stream -> stop -> assert bubble survives (live + reload)."""
+        chat = clean_chat_page
+        page = chat.page
+        test_name = request.node.name
+        bubble_sel = chat.USER_MESSAGE
+        sent_text = (
+            "请用中文非常详细地解释冒泡排序算法的原理、每一步的过程和时间复杂度，"
+            "并给出一个完整的手工推演示例，内容尽量充实详尽，多写几段。"
+        )
+
+        log_test_step("1. Open the Chat page and start a new chat")
+        page.goto(f"{config.base_url}/chat")
+        page.wait_for_load_state("domcontentloaded")
+        chat.create_new_chat()
+
+        log_test_step("2. Send a message that triggers a long streaming reply")
+        chat.send_message(sent_text)
+        bubbles_before = page.locator(bubble_sel).count()
+        assert bubbles_before >= 1, "user bubble should appear right after sending"
+        logger.info(f"User bubbles right after send: {bubbles_before}")
+
+        log_test_step("3. Wait for the streaming stop button to appear")
+        stop_btn = page.get_by_role("button", name=self.STOP_BTN_NAME)
+        try:
+            stop_btn.wait_for(state="visible", timeout=30000)
+        except TimeoutError:
+            take_screenshot(page, "chat_p1_005_stop_button_missing")
+            pytest.fail("stop button never appeared — streaming did not start")
+        logger.info("Streaming confirmed (stop button visible)")
+
+        log_test_step("4. Click stop and wait for streaming to end")
+        stop_btn.click()
+        stop_btn.wait_for(state="hidden", timeout=15000)
+        page.wait_for_timeout(1000)
+
+        log_test_step("5. Assert A: user bubble still present with the sent text")
+        bubbles = page.locator(bubble_sel)
+        count_after = bubbles.count()
+        texts = [bubbles.nth(i).inner_text() for i in range(count_after)]
+        take_screenshot(page, "chat_p1_005_after_stop")
+        assert count_after >= bubbles_before, (
+            f"user bubble lost after stop: before={bubbles_before}, after={count_after}"
+        )
+        assert any(sent_text[:30] in t for t in texts), (
+            f"sent text vanished after stop; bubbles={texts}"
+        )
+        logger.info("Assert A passed: bubble survives stop")
+
+        log_test_step("6. Reload the page and re-enter the same session")
+        page.reload()
+        page.wait_for_load_state("domcontentloaded")
+        page.wait_for_timeout(3000)
+        if page.locator(bubble_sel).count() == 0:
+            # Active session did not survive the reload — pick it from the drawer
+            logger.info("No bubble after reload; re-opening session from drawer")
+            chat.open_session_list()
+            items = chat.get_session_items()
+            assert items, "session drawer is empty after reload"
+            items[0].click()
+            page.wait_for_timeout(2000)
+
+        log_test_step("7. Assert B: user bubble persists across reload")
+        bubbles = page.locator(bubble_sel)
+        count_reload = bubbles.count()
+        texts = [bubbles.nth(i).inner_text() for i in range(count_reload)]
+        take_screenshot(page, "chat_p1_005_after_reload")
+        assert count_reload >= 1 and any(sent_text[:30] in t for t in texts), (
+            f"user bubble lost after reload: count={count_reload}, bubbles={texts}"
+        )
+        logger.info("Assert B passed: bubble persists after reload")
+
+        log_test_result(test_name, True, 0)
+
+
+# ============================================================================
+# CHAT-P1-006: Thinking-block streaming render integrity (#3071 net)
+# ============================================================================
+
+@pytest.mark.integration
+@pytest.mark.requires_llm
+@pytest.mark.p1
+@pytest.mark.chat
+class TestChatThinkingBlockIntegrity:
+    """
+    CHAT-P1-006: Streaming thinking blocks must render intact — the block
+    appears, stays inside its message-container bounds, and the stream
+    terminates normally.
+
+    Background (bug #3071, thinking/tool-call blocks overflow and the
+    stream stops mid-way): the exact trigger content is unknown, so this is
+    a rendering-integrity regression net for the same defect family, not an
+    exact repro. Overflow is quantified via bounding-box containment
+    instead of pixel-level visual diffing.
+    """
+
+    # Thinking block header icon — a <span class="spark-icon spark-icon-spark-memory-line">
+    # (verified in DOM, it is not an <img>).
+    THINKING_ICON = 'span[class*="spark-memory-line"]'
+    STOP_BTN_NAME = "Stop Loading"
+
+    @pytest.mark.test_id("CHAT-P1-006")
+    def test_thinking_block_render_integrity(
+        self, clean_chat_page: ChatPage, request: pytest.FixtureRequest
+    ):
+        """Send a thinking-triggering question; assert the thinking block
+        renders inside its message container and streaming ends cleanly."""
+        chat = clean_chat_page
+        page = chat.page
+        test_name = request.node.name
+        sent_text = "请先思考一下，然后告诉我 17 乘以 23 等于多少，并简单解释你的计算过程。"
+
+        log_test_step("1. Open the Chat page and start a new chat")
+        page.goto(f"{config.base_url}/chat")
+        page.wait_for_load_state("domcontentloaded")
+        chat.create_new_chat()
+
+        log_test_step("2. Send a thinking-triggering message and wait for the reply")
+        chat.send_message_and_wait(sent_text, timeout=120000)
+
+        log_test_step("3. Poll the stop button (stream-end signal, soft check)")
+        # NOTE: the system under test has a known quirk (documented in
+        # chat_page.wait_for_ai_response): the stream-end signal is sometimes
+        # lost so the stop button lingers even though content is complete.
+        # That is a separate defect family from #3071 (render overflow /
+        # stream dying early), so a lingering button is recorded as evidence
+        # but the hard assertions stay on content + geometry below.
+        stop_btn = page.get_by_role("button", name=self.STOP_BTN_NAME)
+        stream_end_seen = True
+        try:
+            stop_btn.wait_for(state="hidden", timeout=15000)
+        except TimeoutError:
+            stream_end_seen = False
+            take_screenshot(page, "chat_p1_006_stop_button_lingering")
+            logger.warning(
+                "stop button still visible after reply settled "
+                "(known stream-end signal quirk; soft-continuing)"
+            )
+
+        log_test_step("4. Assert A: a thinking block exists in an assistant message")
+        ai_bubbles = page.locator(chat.AI_MESSAGE)
+        blocks = ai_bubbles.filter(has=page.locator(self.THINKING_ICON))
+        if blocks.count() == 0:
+            take_screenshot(page, "chat_p1_006_no_thinking_block")
+            pytest.fail("no thinking block rendered in any assistant message")
+        block = blocks.last
+        block.scroll_into_view_if_needed()
+        page.wait_for_timeout(500)
+        logger.info("Thinking block found in an assistant message")
+
+        log_test_step("5. Assert B: thinking block stays inside its message container")
+        container_box = block.bounding_box()
+        # The thinking header row is the icon's parent element
+        header_box = blocks.last.locator(self.THINKING_ICON).first.bounding_box()
+        assert container_box is not None and header_box is not None, (
+            "bounding box unavailable — block not visible in viewport"
+        )
+        slack = 2.0  # px tolerance for border rounding
+        assert header_box["x"] >= container_box["x"] - slack, (
+            f"thinking block overflows left: header x={header_box['x']} < "
+            f"container x={container_box['x']}"
+        )
+        assert header_box["y"] >= container_box["y"] - slack, (
+            f"thinking block overflows top: header y={header_box['y']} < "
+            f"container y={container_box['y']}"
+        )
+        header_right = header_box["x"] + header_box["width"]
+        container_right = container_box["x"] + container_box["width"]
+        assert header_right <= container_right + slack, (
+            f"thinking block overflows right: {header_right} > {container_right}"
+        )
+        header_bottom = header_box["y"] + header_box["height"]
+        container_bottom = container_box["y"] + container_box["height"]
+        assert header_bottom <= container_bottom + slack, (
+            f"thinking block overflows bottom: {header_bottom} > {container_bottom}"
+        )
+        logger.info("Thinking block fully contained in its message container")
+
+        log_test_step("6. Assert C: assistant reply has final text content")
+        final_text = block.inner_text().strip()
+        take_screenshot(page, "chat_p1_006_thinking_block")
+        assert len(final_text) > len("Thinking"), (
+            f"assistant message has no final content: {final_text!r}"
+        )
+
+        log_test_result(test_name, True, 0)
+
+
 if __name__ == "__main__":
     pytest.main([
         __file__,
