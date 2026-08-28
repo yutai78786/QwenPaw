@@ -1126,9 +1126,13 @@ class TestChatThinkingBlockIntegrity:
     instead of pixel-level visual diffing.
     """
 
-    # Thinking block header icon — a <span class="spark-icon spark-icon-spark-memory-line">
-    # (verified in DOM, it is not an <img>).
+    # The thinking/process block now renders as a collapsed accordion group
+    # inside the assistant bubble (vendor Accordion wrapped by LazyAccordion).
+    # The thinking icon/content only mounts after the group is expanded
+    # (lazy children), so the test expands the group before asserting.
     THINKING_ICON = 'span[class*="spark-memory-line"]'
+    ACCORDION_GROUP = ".qwenpaw-accordion-group"
+    ACCORDION_HEADER = ".qwenpaw-accordion-group-header"
     STOP_BTN_NAME = "Stop Loading"
 
     @pytest.mark.test_id("CHAT-P1-006")
@@ -1170,20 +1174,37 @@ class TestChatThinkingBlockIntegrity:
             )
 
         log_test_step("4. Assert A: a thinking block exists in an assistant message")
+        # Since the UI redesign, the thinking block lives inside a collapsed
+        # accordion group (vendor Accordion + LazyAccordion). Its children —
+        # including the spark-memory-line thinking icon — are only mounted
+        # once the group is expanded, so expand the group first.
         ai_bubbles = page.locator(chat.AI_MESSAGE)
-        blocks = ai_bubbles.filter(has=page.locator(self.THINKING_ICON))
-        if blocks.count() == 0:
+        acc_bubbles = ai_bubbles.filter(has=page.locator(self.ACCORDION_GROUP))
+        if acc_bubbles.count() == 0:
             take_screenshot(page, "chat_p1_006_no_thinking_block")
-            pytest.fail("no thinking block rendered in any assistant message")
-        block = blocks.last
+            pytest.fail("no process/thinking accordion in any assistant message")
+        block = acc_bubbles.last
         block.scroll_into_view_if_needed()
-        page.wait_for_timeout(500)
-        logger.info("Thinking block found in an assistant message")
+        acc_group = block.locator(self.ACCORDION_GROUP).first
+        # Playwright .click() does not toggle this vendor header reliably; a
+        # native click dispatched on the header element does (verified in DOM).
+        acc_group.evaluate(
+            "el => el.querySelector('%s') && el.querySelector('%s').click()"
+            % (self.ACCORDION_HEADER, self.ACCORDION_HEADER)
+        )
+        page.wait_for_timeout(1500)
+        icon = block.locator(self.THINKING_ICON).first
+        if icon.count() == 0:
+            take_screenshot(page, "chat_p1_006_no_thinking_block")
+            pytest.fail(
+                "accordion expanded but no thinking icon rendered — "
+                "thinking block missing from the process group"
+            )
+        logger.info("Thinking block found in the expanded process accordion")
 
         log_test_step("5. Assert B: thinking block stays inside its message container")
         container_box = block.bounding_box()
-        # The thinking header row is the icon's parent element
-        header_box = blocks.last.locator(self.THINKING_ICON).first.bounding_box()
+        header_box = icon.bounding_box()
         assert container_box is not None and header_box is not None, (
             "bounding box unavailable — block not visible in viewport"
         )
