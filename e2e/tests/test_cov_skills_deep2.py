@@ -339,3 +339,53 @@ class TestSkillPoolDownloadAndRename:
                 api_context.delete(f"/api/skills/{self.RENAMED}")
             except Exception:
                 pass
+
+
+@pytest.mark.integration
+@pytest.mark.p1
+@pytest.mark.skills
+class TestSkillPoolConfigRoundTrip:
+    """
+    COV-SK-006: Pool skill config get/put/delete round trip (drawer Config
+    section) — GET/PUT/DELETE /pool/{name}/config endpoints.
+    """
+
+    SKILL_NAME = "e2e_cov2_cfgskill"
+
+    @pytest.mark.test_id("COV-SK-006")
+    def test_config_round_trip(
+        self,
+        api_context,
+        request: pytest.FixtureRequest,
+    ):
+        test_name = request.node.name
+
+        log_test_step("1. Seed a pool skill")
+        assert _seed_skill(api_context, self.SKILL_NAME), "seed failed"
+
+        try:
+            log_test_step("2. Read config (initially empty)")
+            resp = api_context.get(f"/api/skills/pool/{self.SKILL_NAME}/config")
+            assert resp.ok, f"GET config failed: {resp.status}"
+            assert resp.json().get("config") == {}, "expected empty initial config"
+
+            log_test_step("3. Write config")
+            new_cfg = {"temperature": 0.5, "max_turns": 3}
+            resp = api_context.put(
+                f"/api/skills/pool/{self.SKILL_NAME}/config",
+                data={"config": new_cfg},
+            )
+            assert resp.ok, f"PUT config failed: {resp.status}"
+
+            log_test_step("4. Read config back")
+            resp = api_context.get(f"/api/skills/pool/{self.SKILL_NAME}/config")
+            assert resp.json().get("config") == new_cfg, "config round-trip mismatch"
+
+            log_test_step("5. Delete config")
+            resp = api_context.delete(f"/api/skills/pool/{self.SKILL_NAME}/config")
+            assert resp.ok, f"DELETE config failed: {resp.status}"
+            assert resp.json().get("cleared") is True
+
+            log_test_result(test_name, True, 0)
+        finally:
+            _cleanup_skill(api_context, self.SKILL_NAME)
