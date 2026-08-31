@@ -11,6 +11,7 @@ Run: pytest tests/test_cov_journey_deep18.py -v
 from __future__ import annotations
 
 import logging
+import os
 
 import pytest
 
@@ -41,7 +42,8 @@ class TestProjectGitOpsJourney:
         H = {"X-Agent-Id": "default"}
 
         log_test_step("1. Seed a local dir + import as project")
-        src = "/tmp/e2e_s18_git"
+        # import-local requires the source to be under the home directory
+        src = os.path.join(os.path.expanduser("~"), "e2e_cov18_git_src")
         subprocess.run(
             ["bash", "-c",
              f"rm -rf {src} && mkdir -p {src} && cd {src} && "
@@ -55,10 +57,11 @@ class TestProjectGitOpsJourney:
 
         imp = api_context.post(
             "/api/workspace/project-directory/import-local",
-            data={"source_path": src, "name": "e2e_cov18_gitproj"},
+            data={"path": src, "name": "e2e_cov18_gitproj"},
             headers=H,
         )
         logger.info("import-local -> %s", imp.status)
+        assert imp.ok, f"import-local failed [{imp.status}]: {imp.text()[:200]}"
 
         log_test_step("2. Bind + git reads")
         if imp.ok:
