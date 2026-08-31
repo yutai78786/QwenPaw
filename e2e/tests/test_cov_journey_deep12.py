@@ -72,9 +72,15 @@ class TestGitRouterJourney:
         test_name = request.node.name
         H = {"X-Agent-Id": "default"}
 
-        for path in ["/api/git", "/api/git/branches", "/api/git/log"]:
+        # Correct prefix is /api/workspace/git (router prefix "/workspace/git")
+        for path in ["/api/workspace/git", "/api/workspace/git/branches",
+                     "/api/workspace/git/log"]:
             resp = api_context.get(path, headers=H)
             logger.info("GET %s -> %s", path, resp.status)
+
+        log_test_step("Read diff")
+        diff = api_context.get("/api/workspace/git/diff", headers=H)
+        logger.info("GET diff -> %s", diff.status)
 
         log_test_result(test_name, True, 0)
 
