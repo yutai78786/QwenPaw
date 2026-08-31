@@ -1150,7 +1150,19 @@ class ChatPage(BasePage):
     # ========== Tool approval level toggle ==========
 
     def get_approval_toggle(self) -> Locator:
-        """Locate the approval-level Tag in the composer (matches any level)."""
+        """Locate the approval-level trigger in the composer.
+
+        Upstream #7368 redesigned the toggle: the old ``span.qwenpaw-tag``
+        became a ``button[aria-haspopup="listbox"]`` with aria-label
+        "Tool Approval Mode" / "工具审批模式". Fall back to the legacy tag
+        selector for older console builds.
+        """
+        modern = self.page.locator(
+            'button[aria-label="Tool Approval Mode"], '
+            'button[aria-label="工具审批模式"]'
+        ).first
+        if modern.count() > 0:
+            return modern
         return (
             self.page.locator("span.qwenpaw-tag")
             .filter(has_text=self._APPROVAL_LABEL_RE)
