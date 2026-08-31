@@ -190,7 +190,8 @@ class TestProjectUploadZipJourney:
         try:
             with open(tmp.name, "rb") as fh:
                 http_resp = http_requests.post(
-                    f"{config.base_url}/api/workspace/project-directory/upload-zip",
+                    f"{config.base_url}/api/workspace/project-directory/upload-zip"
+                    "?name=e2e_cov7_zip",
                     files={"file": ("project.zip", fh, "application/zip")},
                     headers={"X-Agent-Id": "default"},
                     timeout=60,
@@ -199,8 +200,8 @@ class TestProjectUploadZipJourney:
             os.unlink(tmp.name)
 
         logger.info("upload-zip -> %s", http_resp.status_code)
-        assert http_resp.status_code in (200, 201, 400, 409, 422), (
-            f"upload-zip unexpected [{http_resp.status_code}]: {http_resp.text[:200]}"
+        assert http_resp.status_code in (200, 201), (
+            f"upload-zip failed [{http_resp.status_code}]: {http_resp.text[:200]}"
         )
 
         log_test_result(test_name, True, 0)
