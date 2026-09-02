@@ -138,9 +138,15 @@ def test_qrcode_endpoint_supported_channels(app_server, channel) -> None:
         f"{_BASE}/{channel}/qrcode",
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 404, 409, 500, 502, 504), (
-        app_server.logs_tail()
-    )
+    assert resp.status_code in (
+        200,
+        400,
+        404,
+        409,
+        500,
+        502,
+        504,
+    ), app_server.logs_tail()
 
 
 @pytest.mark.integration
