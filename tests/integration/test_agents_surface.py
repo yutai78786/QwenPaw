@@ -52,7 +52,9 @@ def test_list_agents(app_server) -> None:
 def test_memory_runtime_status_default_agent(app_server) -> None:
     """Runtime status for the default agent is a contract response."""
     resp = app_server.api_request(
-        "GET", f"{_BASE}/default/memory/runtime-status", timeout=_T
+        "GET",
+        f"{_BASE}/default/memory/runtime-status",
+        timeout=_T,
     )
     assert resp.status_code in (200, 400, 503), app_server.logs_tail()
 
@@ -62,7 +64,9 @@ def test_memory_runtime_status_default_agent(app_server) -> None:
 def test_memory_runtime_status_unknown_agent_404(app_server) -> None:
     """Runtime status for an unknown agent is a 404."""
     resp = app_server.api_request(
-        "GET", f"{_BASE}/{_ABSENT}/memory/runtime-status", timeout=_T
+        "GET",
+        f"{_BASE}/{_ABSENT}/memory/runtime-status",
+        timeout=_T,
     )
     assert resp.status_code == 404, app_server.logs_tail()
 
@@ -72,7 +76,9 @@ def test_memory_runtime_status_unknown_agent_404(app_server) -> None:
 def test_memory_status_default_agent(app_server) -> None:
     """ReMe memory status for the default agent is contractual."""
     resp = app_server.api_request(
-        "GET", f"{_BASE}/default/memory/status", timeout=_T
+        "GET",
+        f"{_BASE}/default/memory/status",
+        timeout=_T,
     )
     assert resp.status_code in (200, 400, 503), app_server.logs_tail()
 
@@ -82,7 +88,9 @@ def test_memory_status_default_agent(app_server) -> None:
 def test_memory_status_unknown_agent_404(app_server) -> None:
     """Memory status for an unknown agent is a 404."""
     resp = app_server.api_request(
-        "GET", f"{_BASE}/{_ABSENT}/memory/status", timeout=_T
+        "GET",
+        f"{_BASE}/{_ABSENT}/memory/status",
+        timeout=_T,
     )
     assert resp.status_code == 404, app_server.logs_tail()
 
@@ -92,7 +100,9 @@ def test_memory_status_unknown_agent_404(app_server) -> None:
 def test_memory_reindex_unknown_agent_404(app_server) -> None:
     """Reindex for an unknown agent is a 404."""
     resp = app_server.api_request(
-        "POST", f"{_BASE}/{_ABSENT}/memory/reindex", timeout=_T
+        "POST",
+        f"{_BASE}/{_ABSENT}/memory/reindex",
+        timeout=_T,
     )
     assert resp.status_code == 404, app_server.logs_tail()
 

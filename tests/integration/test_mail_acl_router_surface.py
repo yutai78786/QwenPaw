@@ -72,7 +72,13 @@ def test_add_to_whitelist_broadcast(app_server) -> None:
         json={"entries": [_entry(agent_id="", address="ok@example.com")]},
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 404, 409, 422), app_server.logs_tail()
+    assert resp.status_code in (
+        200,
+        400,
+        404,
+        409,
+        422,
+    ), app_server.logs_tail()
 
 
 @pytest.mark.integration
@@ -124,7 +130,13 @@ def test_add_to_blacklist(app_server) -> None:
         json={"entries": [_entry(address="bad@example.com")]},
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 404, 409, 422), app_server.logs_tail()
+    assert resp.status_code in (
+        200,
+        400,
+        404,
+        409,
+        422,
+    ), app_server.logs_tail()
 
 
 @pytest.mark.integration

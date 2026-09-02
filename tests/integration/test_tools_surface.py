@@ -96,12 +96,16 @@ def test_toggle_round_trip(app_server) -> None:
     """Toggle twice returns to the original enabled state."""
     name = _pick_builtin_tool(app_server)
     first = app_server.api_request(
-        "PATCH", f"{_BASE}/{name}/toggle", timeout=_T
+        "PATCH",
+        f"{_BASE}/{name}/toggle",
+        timeout=_T,
     )
     assert first.status_code == 200, app_server.logs_tail()
     state_after_first = first.json().get("enabled")
     second = app_server.api_request(
-        "PATCH", f"{_BASE}/{name}/toggle", timeout=_T
+        "PATCH",
+        f"{_BASE}/{name}/toggle",
+        timeout=_T,
     )
     assert second.status_code == 200, app_server.logs_tail()
     assert second.json().get("enabled") != state_after_first
