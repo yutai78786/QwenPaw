@@ -36,7 +36,12 @@ def test_get_default_project(app_server) -> None:
 @pytest.mark.p1
 def test_set_project_reset_to_default(app_server) -> None:
     """PUT with null path resets to the default workspace dir."""
-    resp = app_server.api_request("PUT", _BASE, json={"path": None}, timeout=_T)
+    resp = app_server.api_request(
+        "PUT",
+        _BASE,
+        json={"path": None},
+        timeout=_T,
+    )
     assert resp.status_code == 200, app_server.logs_tail()
     assert resp.json().get("is_workspace_default") is True
 
@@ -72,7 +77,10 @@ def test_set_project_not_a_directory_400(app_server) -> None:
 def test_create_project_empty_name_400(app_server) -> None:
     """Empty project name is rejected."""
     resp = app_server.api_request(
-        "POST", f"{_BASE}/create", json={"name": "   "}, timeout=_T
+        "POST",
+        f"{_BASE}/create",
+        json={"name": "   "},
+        timeout=_T,
     )
     assert resp.status_code == 400, app_server.logs_tail()
 
@@ -177,6 +185,11 @@ def test_clone_project_invalid_url_contract(app_server) -> None:
         json={"url": "integ-not-a-url", "name": "integ-clone"},
         timeout=_T,
     )
-    assert resp.status_code in (200, 202, 400, 409, 422, 500), (
-        app_server.logs_tail()
-    )
+    assert resp.status_code in (
+        200,
+        202,
+        400,
+        409,
+        422,
+        500,
+    ), app_server.logs_tail()
