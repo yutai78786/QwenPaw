@@ -36,7 +36,13 @@ def test_skills_hub_search(app_server) -> None:
         params={"keyword": "integ"},
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 404, 502, 503), app_server.logs_tail()
+    assert resp.status_code in (
+        200,
+        400,
+        404,
+        502,
+        503,
+    ), app_server.logs_tail()
 
 
 @pytest.mark.integration
@@ -52,7 +58,9 @@ def test_skills_pool(app_server) -> None:
 def test_skills_pool_builtin_sources(app_server) -> None:
     """Builtin sources endpoint parses."""
     resp = app_server.api_request(
-        "GET", "/api/skills/pool/builtin-sources", timeout=_T
+        "GET",
+        "/api/skills/pool/builtin-sources",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -62,7 +70,9 @@ def test_skills_pool_builtin_sources(app_server) -> None:
 def test_skills_pool_builtin_notice(app_server) -> None:
     """Builtin notice endpoint parses."""
     resp = app_server.api_request(
-        "GET", "/api/skills/pool/builtin-notice", timeout=_T
+        "GET",
+        "/api/skills/pool/builtin-notice",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -72,7 +82,9 @@ def test_skills_pool_builtin_notice(app_server) -> None:
 def test_skills_install_status_unknown_task(app_server) -> None:
     """Install status for an unknown task is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/skills/hub/install/status/integ-no-such-task", timeout=_T
+        "GET",
+        "/api/skills/hub/install/status/integ-no-such-task",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -82,7 +94,9 @@ def test_skills_install_status_unknown_task(app_server) -> None:
 def test_mcp_oauth_status_unknown_client(app_server) -> None:
     """OAuth status for an unknown client key is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/mcp/oauth/status/integ-no-such-client", timeout=_T
+        "GET",
+        "/api/mcp/oauth/status/integ-no-such-client",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -92,7 +106,9 @@ def test_mcp_oauth_status_unknown_client(app_server) -> None:
 def test_mcp_oauth_delete_unknown_client(app_server) -> None:
     """OAuth revoke for an unknown client key is contractual."""
     resp = app_server.api_request(
-        "DELETE", "/api/mcp/oauth/integ-no-such-client", timeout=_T
+        "DELETE",
+        "/api/mcp/oauth/integ-no-such-client",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -110,7 +126,9 @@ def test_plugins_catalog(app_server) -> None:
 def test_plugins_status_unknown(app_server) -> None:
     """Status of an unknown plugin is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/plugins/integ-no-such-plugin/status", timeout=_T
+        "GET",
+        "/api/plugins/integ-no-such-plugin/status",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -133,7 +151,9 @@ def test_plugins_market_search(app_server) -> None:
 def test_console_push_messages(app_server) -> None:
     """Push messages endpoint parses."""
     resp = app_server.api_request(
-        "GET", "/api/console/push-messages", timeout=_T
+        "GET",
+        "/api/console/push-messages",
+        timeout=_T,
     )
     assert resp.status_code == 200, app_server.logs_tail()
 
@@ -143,7 +163,9 @@ def test_console_push_messages(app_server) -> None:
 def test_console_inbox_events(app_server) -> None:
     """Inbox events endpoint parses."""
     resp = app_server.api_request(
-        "GET", "/api/console/inbox/events", timeout=_T
+        "GET",
+        "/api/console/inbox/events",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -153,7 +175,9 @@ def test_console_inbox_events(app_server) -> None:
 def test_console_inbox_traces_unknown_run(app_server) -> None:
     """Inbox traces for an unknown run id is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/console/inbox/traces/integ-no-such-run", timeout=_T
+        "GET",
+        "/api/console/inbox/traces/integ-no-such-run",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -163,6 +187,8 @@ def test_console_inbox_traces_unknown_run(app_server) -> None:
 def test_console_chat_task_unknown(app_server) -> None:
     """Chat task lookup for an unknown task id is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/console/chat/task/integ-no-such-task", timeout=_T
+        "GET",
+        "/api/console/chat/task/integ-no-such-task",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404, 410), app_server.logs_tail()
