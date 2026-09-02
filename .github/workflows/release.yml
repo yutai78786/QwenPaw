@@ -13,6 +13,14 @@
 #   4. If anything fails, nothing is published and the draft is left untouched
 #      (zero external trace; just fix and re-run).
 #
+# Merge freeze: from the moment this workflow starts until it ends (success,
+# failure or skip), a red "Release Window" commit status is posted on every
+# open PR targeting the default branch, and flipped back to green at the end
+# (freeze-main / unfreeze-main jobs). With "Release Window" listed among the
+# required status checks of the branch ruleset, no PR can be merged into the
+# default branch while a release is in flight. release-window-watchdog.yml
+# reconciles the statuses on a schedule in case a run is cancelled externally.
+#
 # dry_run=true stubs the three production-external publishes (PyPI / Docker /
 # OSS) so fork CI can exercise the gating + draft flip without touching prod.
 # Draft-asset upload, the draft→published flip and the duty issue still run for
@@ -37,14 +45,72 @@ on:
 permissions:
   contents: write
   issues: write
+  # Needed by the freeze/unfreeze-main jobs below, which post commit statuses
+  # ("Release Window") on the head commit of every open PR targeting the
+  # default branch while a release is in flight.
+  statuses: write
 
 concurrency:
   group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: false
 
 jobs:
+  # ── Merge freeze: block PR merges into the default branch while releasing ──
+  # Posts a red "Release Window" commit status on the head commit of every
+  # open non-draft PR targeting the default branch, and creates the
+  # "release-window-active" label as a lock marker. When a repository ruleset
+  # lists "Release Window" among its required status checks, no PR can be
+  # merged: existing PRs carry the red status, and PRs opened later carry no
+  # status at all, which a required check treats as "not reported" (blocked).
+  # unfreeze-main flips everything back at the end of the run; the schedule-
+  # driven release-window-watchdog.yml reconciles the rare leftover case.
+  # Commit statuses are repository-local, so this also runs on dry_run
+  # (forks only affect forks).
+  freeze-main:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Freeze merges into the default branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          default="$(gh api "repos/$REPO" --jq '.default_branch')"
+          echo "Freezing merges into '$default' for release run $RUN_URL"
+
+          # Lock marker: lets the sentinel and the watchdog tell "frozen" from
+          # "not frozen" with a single cheap request. Idempotent.
+          if ! gh api "repos/$REPO/labels/release-window-active" >/dev/null 2>&1; then
+            gh api --method POST "repos/$REPO/labels" \
+              -f name="release-window-active" \
+              -f color="B60205" \
+              -f description="Release in flight — merges into the default branch are frozen" >/dev/null
+          fi
+          echo "Lock marker present."
+
+          # Page through ALL open non-draft PRs targeting the default branch
+          # (never a fixed limit: a PR missed by the freeze would silently keep
+          # a merge hole open for the whole release window). Drafts cannot be
+          # merged by GitHub in the first place.
+          gh api --paginate "repos/$REPO/pulls?state=open&base=$default&per_page=100" \
+            --jq '.[] | select(.draft != true) | "\(.number) \(.head.sha)"' |
+          while read -r pr sha; do
+            gh api --method POST "repos/$REPO/statuses/$sha" \
+              -f state="failure" \
+              -f context="Release Window" \
+              -f description="Release in progress — merges frozen" \
+              -f target_url="$RUN_URL" >/dev/null </dev/null
+            echo "Froze PR #$pr ($sha)"
+            sleep 0.1
+          done
+
   # ── Resolve the draft, pin the commit, fail fast on missing secrets ─────────
+  # Fail-closed: resolve waits on freeze-main. If the merge freeze cannot be
+  # applied, the release must not proceed — releasing without the freeze would
+  # silently re-open exactly the window this workflow exists to close.
   resolve:
+    needs: [freeze-main]
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.pick.outputs.tag }}
@@ -575,3 +641,41 @@ jobs:
       ref: ${{ needs.resolve.outputs.sha }}
       dry_run: ${{ inputs.dry_run }}
     secrets: inherit
+
+  # ── Merge unfreeze: always runs, whatever the release outcome ──────────────
+  # Counterpart of freeze-main. Runs after every release job has reached a
+  # terminal state — success, failure, cancellation or skip — and flips every
+  # "Release Window" status back to green (including PRs opened mid-release),
+  # then removes the lock-marker label. `if: always()` also survives a manual
+  # cancellation of the run. If the runner is force-killed before this job
+  # finishes, release-window-watchdog.yml reconciles within minutes.
+  unfreeze-main:
+    needs: [freeze-main, finalize, promote-desktop, duty-issue, deploy-website]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Unfreeze merges into the default branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          default="$(gh api "repos/$REPO" --jq '.default_branch')"
+          echo "Unfreezing merges into '$default'"
+          gh api --paginate "repos/$REPO/pulls?state=open&base=$default&per_page=100" \
+            --jq '.[] | select(.draft != true) | "\(.number) \(.head.sha)"' |
+          while read -r pr sha; do
+            gh api --method POST "repos/$REPO/statuses/$sha" \
+              -f state="success" \
+              -f context="Release Window" \
+              -f description="Release window closed — merges allowed" \
+              -f target_url="$RUN_URL" >/dev/null </dev/null
+            echo "Unfroze PR #$pr ($sha)"
+            sleep 0.1
+          done
+          # Remove the lock marker last: the watchdog treats "label present +
+          # no release in flight" as "unfreeze leaked" and cleans up itself.
+          # (gh label delete needs an interactive --yes, so use the API.)
+          gh api --method DELETE "repos/$REPO/labels/release-window-active" \
+            2>/dev/null || echo "Label already gone"

@@ -1,0 +1,138 @@
+# Release-window watchdog: heals a leaked merge freeze and backfills stamps.
+#
+# release.yml freezes merges into the default branch while a release is in
+# flight (freeze-main / unfreeze-main jobs) using a red "Release Window"
+# commit status plus a "release-window-active" lock-marker label. unfreeze-main
+# uses `if: always()` so it normally runs even on success, failure or manual
+# cancellation. The watchdog covers the rare leftover cases:
+#
+#   * scheduled mode (every 5 minutes): if the lock marker is present but no
+#     release run is queued/in-progress, the unfreeze leaked — sweep every open
+#     non-draft PR back to green and delete the marker;
+#   * manual backfill mode (workflow_dispatch with backfill=true): stamp a
+#     green "Release Window" status on every open non-draft PR that does not
+#     already carry a green one. Run this ONCE right after "Release Window" is
+#     added to the branch ruleset's required status checks, so existing PRs are
+#     not left without the now-required stamp. New PRs are stamped by
+#     release-window-sentinel.yml; PRs whose head changes are re-stamped there
+#     too, so the backfill is a one-time migration.
+#
+# Cost model (GITHUB_TOKEN is capped at ~1,000 requests/hour/repo, shared by
+# every workflow in the repo): the scheduled path does exactly 1 request when
+# idle (read the lock-marker label) and 2 while a legitimate release is in
+# flight — it only performs the expensive full sweep after confirming the
+# freeze leaked.
+#
+# Note on PRs opened mid-release: a required status check with no reported
+# status blocks merging on its own, so they need no red stamp to be blocked;
+# they get their red stamp from the sentinel anyway and their green stamp from
+# unfreeze-main (or this watchdog) at the end.
+
+name: Release Window Watchdog
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: >-
+          One-time migration: stamp a green "Release Window" status on every
+          open non-draft PR targeting the default branch. Run once after the
+          ruleset starts requiring "Release Window".
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  statuses: write
+  actions: read
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Heal a leaked release freeze / backfill stamps
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BACKFILL: ${{ inputs.backfill }}
+          WATCHDOG_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          default="$(gh api "repos/$REPO" --jq '.default_branch')"
+
+          # ── Mode 1: one-time backfill (manual dispatch only) ───────────────
+          if [ "${BACKFILL:-false}" = "true" ]; then
+            # Guard: backfill stamps GREEN. Refuse while a freeze is active,
+            # or a manual backfill could paint red (frozen) PRs green and
+            # punch a hole through an in-flight release window.
+            if gh api "repos/$REPO/labels/release-window-active" >/dev/null 2>&1; then
+              echo "::error::Backfill refused: a release freeze is active (release-window-active label present). Wait for the release to finish."
+              exit 1
+            fi
+            echo "Backfill mode: stamping green 'Release Window' on every open non-draft PR."
+            gh api --paginate "repos/$REPO/pulls?state=open&base=$default&per_page=100" \
+              --jq '.[] | select(.draft != true) | "\(.number) \(.head.sha)"' |
+            while read -r pr sha; do
+              current="$(gh api "repos/$REPO/commits/$sha/status" \
+                --jq '.statuses | map(select(.context == "Release Window")) | (first.state // "absent")' </dev/null)"
+              if [ "$current" = "success" ]; then
+                echo "PR #$pr ($sha): already green"
+                continue
+              fi
+              gh api --method POST "repos/$REPO/statuses/$sha" \
+                -f state="success" \
+                -f context="Release Window" \
+                -f description="No release in flight — merges allowed" \
+                -f target_url="$WATCHDOG_URL" >/dev/null </dev/null
+              echo "PR #$pr ($sha): $current -> green"
+              sleep 0.1
+            done
+            echo "Backfill done."
+            exit 0
+          fi
+
+          # ── Mode 2: scheduled leak-heal (cheap when idle) ──────────────────
+          # 1. Is the lock-marker label even present? If not, nothing is frozen
+          #    and we exit (1 request).
+          if ! gh api "repos/$REPO/labels/release-window-active" >/dev/null 2>&1; then
+            echo "No release-window-active label — nothing frozen. Exiting."
+            exit 0
+          fi
+          echo "Lock marker present; checking for in-flight release runs."
+
+          # 2. Is a release actually in flight? If yes, the freeze is
+          #    legitimate; leave it alone (1 request).
+          inflight="$(gh api \
+            "repos/$REPO/actions/workflows/release.yml/runs?per_page=50" \
+            --jq '[.workflow_runs[]
+                   | select(.status == "in_progress" or .status == "queued")]
+                  | length')"
+          if [ "$inflight" -gt 0 ]; then
+            echo "Release run in flight ($inflight) — freeze is legitimate. Exiting."
+            exit 0
+          fi
+          echo "Freeze leaked: lock marker present but no release in flight. Cleaning up."
+
+          # 3. Expensive cleanup (only when the freeze actually leaked):
+          #    page through every open non-draft PR targeting the default
+          #    branch and flip its "Release Window" status back to green.
+          gh api --paginate "repos/$REPO/pulls?state=open&base=$default&per_page=100" \
+            --jq '.[] | select(.draft != true) | "\(.number) \(.head.sha)"' |
+          while read -r pr sha; do
+            gh api --method POST "repos/$REPO/statuses/$sha" \
+              -f state="success" \
+              -f context="Release Window" \
+              -f description="Release window closed — merges allowed" \
+              -f target_url="$WATCHDOG_URL" >/dev/null </dev/null
+            echo "Unfroze PR #$pr ($sha)"
+            sleep 0.1
+          done
+
+          # Remove the lock marker last so a re-run is idempotent.
+          # (gh label delete needs an interactive --yes, so use the API.)
+          gh api --method DELETE "repos/$REPO/labels/release-window-active" \
+            2>/dev/null || echo "Label already gone"
+          echo "Leaked freeze healed."
