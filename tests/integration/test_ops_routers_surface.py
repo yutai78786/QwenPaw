@@ -23,7 +23,9 @@ _T = default_http_timeout(20.0)
 def test_checkpoint_status(app_server) -> None:
     """Checkpoint status endpoint parses."""
     resp = app_server.api_request(
-        "GET", "/api/workspace/checkpoints/status", timeout=_T
+        "GET",
+        "/api/workspace/checkpoints/status",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -33,7 +35,9 @@ def test_checkpoint_status(app_server) -> None:
 def test_checkpoint_graph(app_server) -> None:
     """Checkpoint graph endpoint is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/workspace/checkpoints/graph", timeout=_T
+        "GET",
+        "/api/workspace/checkpoints/graph",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -43,7 +47,9 @@ def test_checkpoint_graph(app_server) -> None:
 def test_checkpoint_gc_settings(app_server) -> None:
     """GC settings read endpoint parses."""
     resp = app_server.api_request(
-        "GET", "/api/workspace/checkpoints/gc/settings", timeout=_T
+        "GET",
+        "/api/workspace/checkpoints/gc/settings",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -66,7 +72,9 @@ def test_checkpoint_restore_preview(app_server) -> None:
 def test_checkpoint_gc_preview(app_server) -> None:
     """GC preview requires a body (422 without one)."""
     resp = app_server.api_request(
-        "POST", "/api/workspace/checkpoints/gc/preview", timeout=_T
+        "POST",
+        "/api/workspace/checkpoints/gc/preview",
+        timeout=_T,
     )
     assert resp.status_code in (200, 400, 404, 422), app_server.logs_tail()
 
@@ -84,7 +92,9 @@ def test_loops_status(app_server) -> None:
 def test_loops_gates_catalog(app_server) -> None:
     """Loop gates catalog endpoint parses."""
     resp = app_server.api_request(
-        "GET", "/api/loops/gates/catalog", timeout=_T
+        "GET",
+        "/api/loops/gates/catalog",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -102,7 +112,9 @@ def test_loops_custom_list(app_server) -> None:
 def test_loops_delete_unknown_mode(app_server) -> None:
     """Deleting an unknown custom loop mode is contractual."""
     resp = app_server.api_request(
-        "DELETE", "/api/loops/custom/integ-no-such-mode", timeout=_T
+        "DELETE",
+        "/api/loops/custom/integ-no-such-mode",
+        timeout=_T,
     )
     assert resp.status_code in (204, 404), app_server.logs_tail()
 
@@ -120,7 +132,9 @@ def test_backups_jobs_listing(app_server) -> None:
 def test_backups_jobs_active(app_server) -> None:
     """Active backup jobs endpoint parses."""
     resp = app_server.api_request(
-        "GET", "/api/backups/jobs/active", timeout=_T
+        "GET",
+        "/api/backups/jobs/active",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -130,7 +144,9 @@ def test_backups_jobs_active(app_server) -> None:
 def test_backups_job_unknown(app_server) -> None:
     """Lookup of an unknown backup job is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/backups/jobs/integ-no-such-job", timeout=_T
+        "GET",
+        "/api/backups/jobs/integ-no-such-job",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -140,7 +156,9 @@ def test_backups_job_unknown(app_server) -> None:
 def test_backups_job_events_unknown(app_server) -> None:
     """Events of an unknown backup job is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/backups/jobs/integ-no-such-job/events", timeout=_T
+        "GET",
+        "/api/backups/jobs/integ-no-such-job/events",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -150,7 +168,9 @@ def test_backups_job_events_unknown(app_server) -> None:
 def test_harness_models_unknown_provider(app_server) -> None:
     """Harness models for an unknown provider is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/harnesses/integ-no-such-provider/models", timeout=_T
+        "GET",
+        "/api/harnesses/integ-no-such-provider/models",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -160,7 +180,9 @@ def test_harness_models_unknown_provider(app_server) -> None:
 def test_harness_mcp_unknown_provider(app_server) -> None:
     """Harness MCP surface for an unknown provider is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/harnesses/integ-no-such-provider/mcp", timeout=_T
+        "GET",
+        "/api/harnesses/integ-no-such-provider/mcp",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
@@ -170,7 +192,9 @@ def test_harness_mcp_unknown_provider(app_server) -> None:
 def test_harness_skills_unknown_provider(app_server) -> None:
     """Harness skills for an unknown provider is contractual."""
     resp = app_server.api_request(
-        "GET", "/api/harnesses/integ-no-such-provider/skills", timeout=_T
+        "GET",
+        "/api/harnesses/integ-no-such-provider/skills",
+        timeout=_T,
     )
     assert resp.status_code in (200, 404), app_server.logs_tail()
 
