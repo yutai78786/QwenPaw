@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -747,3 +749,88 @@ def unregister_mock_provider(app_server, provider_id: str):
         )
     except Exception:
         pass
+
+
+# ------------------------------------------------------------------ #
+# CLI subprocess coverage
+# ------------------------------------------------------------------ #
+
+_INTEGRATION_COVERAGE_DIR_NAME = ".integration_coverage"
+_COVERAGE_SUBPROC_BASENAME = "integration_subproc"
+_COVERAGE_RCFILE_NAME = "coverage_subprocess.ini"
+
+
+def coverage_subprocess_env(
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Environment that makes a CLI subprocess trace coverage.
+
+    ``conftest.py`` already injects ``COVERAGE_PROCESS_START`` /
+    ``COVERAGE_FILE`` into the app-server subprocess, and its
+    ``pytest_sessionfinish`` runs ``coverage combine`` over every
+    ``integration_subproc*`` file in ``.integration_coverage/``.
+
+    Reusing that same rcfile and data-file basename means a *separate*
+    ``python -m qwenpaw ...`` subprocess (CLI commands, which the app
+    server never imports) also lands in the combined report — otherwise
+    thousands of ``cli/`` lines stay at 0% no matter how many CLI cases
+    run.
+
+    No-op (returns ``base_env`` unchanged) when subprocess coverage is
+    not requested, so local runs without
+    ``QWENPAW_INTEGRATION_COVERAGE`` behave exactly as before.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    requested = os.environ.get(
+        "QWENPAW_INTEGRATION_COVERAGE",
+        "",
+    ).strip().lower() in ("1", "true", "yes")
+    if not requested:
+        return env
+
+    root = Path(__file__).resolve().parents[2]
+    directory = root / _INTEGRATION_COVERAGE_DIR_NAME
+    rcfile = directory / _COVERAGE_RCFILE_NAME
+    if not rcfile.exists():
+        # Session start has not written the rcfile (e.g. running a single
+        # module without pytest_sessionstart); tracing would silently
+        # produce nothing, so leave the environment alone.
+        return env
+
+    env["COVERAGE_PROCESS_START"] = str(rcfile)
+    env["COVERAGE_FILE"] = str(directory / _COVERAGE_SUBPROC_BASENAME)
+    return env
+
+
+def run_cli(
+    *args: str,
+    timeout: float = 60.0,
+    home: Path | None = None,
+    cwd: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> "subprocess.CompletedProcess[str]":
+    """Run ``python -m qwenpaw <args>`` with coverage traced.
+
+    Always passes an isolated ``HOME``/``USERPROFILE`` so CLI cases can
+    never read or write the developer's real ``~/.qwenpaw``; callers may
+    override it with ``home=`` to point at a prepared fixture directory.
+    """
+    env = coverage_subprocess_env()
+    if home is not None:
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+    if extra_env:
+        env.update({str(k): str(v) for k, v in extra_env.items()})
+
+    root = Path(__file__).resolve().parents[2]
+    return subprocess.run(
+        [sys.executable, "-m", "qwenpaw", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+        cwd=str(cwd if cwd is not None else root),
+        env=env,
+    )
