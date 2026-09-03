@@ -13,10 +13,8 @@ Two tiers:
 
 from __future__ import annotations
 
-import subprocess
-import sys
-
 import pytest
+from helpers import cli_sandbox_env, cli_sandbox_home, run_cli
 
 _SUBCOMMANDS = [
     "acp",
@@ -49,14 +47,19 @@ _SUBCOMMANDS = [
 
 
 def _run_cli(*args, timeout=60):
-    return subprocess.run(
-        [sys.executable, "-m", "qwenpaw", *args],
-        capture_output=True,
-        text=True,
+    """Run ``qwenpaw <args>`` inside a sandbox, with coverage traced.
+
+    Goes through ``helpers.run_cli`` so the subprocess inherits
+    ``COVERAGE_PROCESS_START`` (the CLI's own lines land in the
+    integration report) and an isolated ``HOME``/``QWENPAW_WORKING_DIR``
+    (read-only commands such as ``clean --dry-run`` must not inspect the
+    developer's real ``~/.qwenpaw``).
+    """
+    return run_cli(
+        *args,
         timeout=timeout,
-        check=False,
-        encoding="utf-8",
-        errors="replace",
+        home=cli_sandbox_home(),
+        extra_env=cli_sandbox_env(),
     )
 
 
