@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -834,3 +835,44 @@ def run_cli(
         cwd=str(cwd if cwd is not None else root),
         env=env,
     )
+
+
+_CLI_SANDBOX: tuple[Path, Path] | None = None
+
+
+def cli_sandbox() -> tuple[Path, Path]:
+    """Process-wide sandbox ``(home, working_dir)`` for CLI cases.
+
+    Created once per test process (so once per xdist worker) and reused:
+    CLI cases that only read local config are cheap, and paying for a
+    fresh ``init`` on every one of them would dominate their runtime.
+
+    Redirecting ``HOME``/``USERPROFILE`` and ``QWENPAW_WORKING_DIR``
+    here keeps read-only commands such as ``clean --dry-run`` from
+    inspecting the developer's real ``~/.qwenpaw``.
+    """
+    global _CLI_SANDBOX  # noqa: PLW0603 - intentional process cache
+    if _CLI_SANDBOX is None:
+        root = Path(tempfile.mkdtemp(prefix="qwenpaw-cli-sandbox-"))
+        working = root / "working"
+        working.mkdir()
+        _CLI_SANDBOX = (root, working)
+    return _CLI_SANDBOX
+
+
+def cli_sandbox_home() -> Path:
+    """Home directory of :func:`cli_sandbox`."""
+    return cli_sandbox()[0]
+
+
+def cli_sandbox_env() -> dict[str, str]:
+    """Environment variables pinning a CLI run to the sandbox."""
+    home, working = cli_sandbox()
+    return {
+        "QWENPAW_WORKING_DIR": str(working),
+        "QWENPAW_SECRET_DIR": str(home / "secret"),
+        "QWENPAW_AUTH_ENABLED": "false",
+        "QWENPAW_RUNNING_IN_CONTAINER": "true",
+        "PYTHONIOENCODING": "utf-8",
+        "NO_PROXY": "*",
+    }
