@@ -22,16 +22,16 @@ from agentscope.message import TextBlock, ToolResultState
 from agentscope.tool import ToolChunk
 
 from ...config.context import (
-    get_current_project_dir,
+    get_all_project_dir_paths,
     get_current_shell_command_executable,
     get_current_shell_command_timeout,
-    get_current_workspace_dir,
+    get_tool_base_dir,
 )
-from ...constant import WORKING_DIR
 from ...runtime.tool_registry import tool_descriptor
 from ...sandbox import ExecutionResult
 from ...sandbox.config import SandboxConfig
 from ...utils.io_utils import run_sync_io
+from ...utils.shell_normalization import normalize_posix_line_continuations
 
 _logger = logging.getLogger(__name__)
 
@@ -219,8 +219,9 @@ def _collapse_embedded_newlines(
 
     Unix-like shells natively assign meaning to newlines in command lists,
     control structures, comments, and heredocs.  Rewriting those newlines
-    changes the program, so commands on Unix/macOS are passed through
-    unchanged.
+    changes the program, so ordinary newlines are preserved. POSIX
+    backslash-newline continuations are removed using the same normalization
+    as the security checks.
 
     On Windows, PowerShell also supports multiline scripts and keeps the
     original command.  ``cmd.exe`` (and unknown cmd-like shells) can truncate
@@ -230,7 +231,7 @@ def _collapse_embedded_newlines(
     if "\n" not in cmd:
         return cmd
     if sys.platform != "win32":
-        return cmd
+        return normalize_posix_line_continuations(cmd)
     if shell_executable and _is_powershell(shell_executable):
         return cmd
     return cmd.replace("\r\n", " ").replace("\n", " ")
@@ -1319,13 +1320,21 @@ async def execute_shell_command(
             timeout = configured
 
     if cwd is not None:
-        working_dir = cwd
+        # A relative cwd is taken from the primary directory; an absolute one
+        # is used as given. Not a permission boundary — the governance rules
+        # and guard chain decide what a command may touch, and a shell can
+        # `cd` anywhere regardless, so blocking here only broke ordinary use.
+        roots = get_all_project_dir_paths() or [get_tool_base_dir()]
+        candidate = Path(str(cwd)).expanduser()
+        if not candidate.is_absolute():
+            candidate = roots[0] / candidate
+        # ``resolve()`` walks the filesystem, and the subprocess it feeds is
+        # already spawned in a worker thread — leaving this one call on the
+        # event loop would make an unresponsive mount stall every other
+        # connection while nothing else about this path does.
+        working_dir = await run_sync_io(candidate.resolve)
     else:
-        working_dir = (
-            get_current_project_dir()
-            or get_current_workspace_dir()
-            or WORKING_DIR
-        )
+        working_dir = get_tool_base_dir()
 
     # Ensure the venv Python is on PATH for subprocesses
     env = os.environ.copy()

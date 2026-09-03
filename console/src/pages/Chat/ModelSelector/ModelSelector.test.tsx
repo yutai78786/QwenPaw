@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "@/test/common_setup";
 import ModelSelector from "./index";
@@ -216,6 +216,34 @@ describe("ModelSelector", () => {
   it("displays current active model name on trigger button after loading", async () => {
     renderWithProviders(<ModelSelector />);
     expect((await screen.findAllByText("GPT-4"))[0]).toBeInTheDocument();
+  });
+
+  it("marks the active free model on the trigger button", async () => {
+    vi.mocked(providerApi.listProviders).mockResolvedValue([
+      {
+        ...mockProvider,
+        models: [{ ...mockProvider.models[0], is_free: true }],
+      },
+    ]);
+    renderWithProviders(<ModelSelector />);
+
+    const trigger = await screen.findByRole("button", {
+      name: "chat.modelSelectTooltip",
+    });
+    await waitFor(() => {
+      expect(trigger).toHaveTextContent("modelSelector.free");
+      expect(trigger.querySelector('[class*="freeTag"]')).toBeInTheDocument();
+    });
+  });
+
+  it("does not mark a paid active model as free", async () => {
+    renderWithProviders(<ModelSelector />);
+
+    const trigger = await screen.findByRole("button", {
+      name: "chat.modelSelectTooltip",
+    });
+    expect(trigger).not.toHaveTextContent("modelSelector.free");
+    expect(trigger.querySelector('[class*="freeTag"]')).toBeNull();
   });
 
   it("keeps advanced model controls out of the release UI", async () => {
@@ -1019,6 +1047,68 @@ describe("ModelSelector", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows every free model from a configured free provider", async () => {
+    vi.mocked(providerApi.listProviders).mockResolvedValue([
+      {
+        ...mockProvider,
+        id: "opencode",
+        name: "OpenCode",
+        is_free_tier: true,
+        models: [
+          {
+            ...mockProvider.models[0],
+            id: "opencode-free-one",
+            name: "OpenCode Free One",
+            is_free: true,
+          },
+          {
+            ...mockProvider.models[1],
+            id: "opencode-free-two",
+            name: "OpenCode Free Two",
+            is_free: true,
+          },
+          {
+            ...mockProvider.models[1],
+            id: "opencode-paid-model",
+            name: "OpenCode Paid Model",
+            is_free: false,
+          },
+        ],
+      },
+    ]);
+    vi.mocked(providerApi.getActiveModels).mockResolvedValue({
+      active_llm: {
+        provider_id: "opencode",
+        model: "opencode-free-one",
+      },
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<ModelSelector />);
+    await user.click(
+      await screen.findByRole("button", {
+        name: "chat.modelSelectTooltip",
+      }),
+    );
+
+    await user.click(screen.getByRole("tab", { name: "FREE" }));
+    expect(
+      (await screen.findAllByText("OpenCode Free One")).length,
+    ).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText("OpenCode Free Two")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("OpenCode Paid Model")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "PRO" }));
+    expect(
+      (await screen.findAllByText("OpenCode Free One")).length,
+    ).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText("OpenCode Free Two")).length,
+    ).toBeGreaterThan(0);
+    expect(await screen.findByText("OpenCode Paid Model")).toBeInTheDocument();
+  });
+
   it("does not show paid discovery candidates in the free tab search", async () => {
     const candidate = {
       ...mockProvider.models[0],
@@ -1604,5 +1694,120 @@ describe("ModelSelector", () => {
     expect(
       screen.getByLabelText("modelSelector.fallbackActive"),
     ).toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // is_local provider (e.g. Ollama) — regression for #5108 / #5233
+  // A local provider with no api_key must still show its models in the PRO
+  // tab and allow selection, because is_local bypasses the api_key check.
+  // -------------------------------------------------------------------------
+
+  const ollamaProvider = {
+    ...mockProvider,
+    id: "ollama",
+    name: "Ollama",
+    api_key: "",
+    base_url: "http://localhost:11434",
+    require_api_key: false,
+    is_local: true,
+    is_custom: false,
+    models: [
+      {
+        ...mockProvider.models[0],
+        id: "llama3",
+        name: "Llama 3",
+      },
+      {
+        ...mockProvider.models[1],
+        id: "qwen2:7b",
+        name: "Qwen 2 7B",
+      },
+    ],
+  };
+
+  it("shows is_local provider models in PRO tab without api_key (#5108)", async () => {
+    vi.mocked(providerApi.listProviders).mockResolvedValue([ollamaProvider]);
+    vi.mocked(providerApi.getActiveModels).mockResolvedValue({
+      active_llm: { provider_id: "ollama", model: "llama3" },
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<ModelSelector />);
+    await screen.findAllByText("Llama 3");
+
+    await user.click(screen.getAllByText("Llama 3")[0]);
+
+    // Ollama provider should appear in the dropdown
+    expect(await screen.findByText("Ollama")).toBeInTheDocument();
+    // Its models should be visible
+    expect(await screen.findByText("Qwen 2 7B")).toBeInTheDocument();
+  });
+
+  it("can switch to a model from is_local provider (#5233)", async () => {
+    vi.mocked(providerApi.listProviders).mockResolvedValue([ollamaProvider]);
+    vi.mocked(providerApi.getActiveModels).mockResolvedValue({
+      active_llm: { provider_id: "ollama", model: "llama3" },
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<ModelSelector />);
+    await screen.findAllByText("Llama 3");
+
+    await user.click(screen.getAllByText("Llama 3")[0]);
+    await user.click(await screen.findByText("Qwen 2 7B"));
+
+    await waitFor(() => {
+      expect(providerApi.setActiveLlm).toHaveBeenCalledWith({
+        provider_id: "ollama",
+        model: "qwen2:7b",
+        scope: "agent",
+        agent_id: "default",
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // A#82265510 — debounce rapid successive clicks
+  // Rapid consecutive clicks on a model must NOT trigger multiple API calls.
+  // The savingRef guard in activateModel prevents concurrent save attempts.
+  // ---------------------------------------------------------------------------
+  it("prevents duplicate API calls on rapid consecutive model clicks (A#82265510)", async () => {
+    // Make the API slow so we can verify the guard blocks the second call
+    let resolveSetActiveLlm!: (value: ActiveModelsInfo) => void;
+    vi.mocked(providerApi.setActiveLlm).mockImplementation(
+      () =>
+        new Promise<ActiveModelsInfo>((resolve) => {
+          resolveSetActiveLlm = resolve;
+        }),
+    );
+
+    const user = userEvent.setup();
+    renderWithProviders(<ModelSelector />);
+    await screen.findAllByText("GPT-4");
+
+    // Open the dropdown
+    await user.click(screen.getAllByText("GPT-4")[0]);
+    const gpt35 = await screen.findByText("GPT-3.5 Turbo");
+
+    // First click triggers the API call
+    await user.click(gpt35);
+
+    // Use fireEvent for the second click (bypasses pointer-events CSS check)
+    // to simulate a rapid double-click before the first API call resolves.
+    // The savingRef guard should block this second invocation.
+    fireEvent.click(gpt35);
+
+    // Only ONE API call should have been made despite two clicks
+    expect(providerApi.setActiveLlm).toHaveBeenCalledTimes(1);
+
+    // Resolve the pending call to clean up
+    resolveSetActiveLlm!({
+      active_llm: { provider_id: "openai", model: "gpt-3.5-turbo" },
+      effective_max_input_length: 16384,
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "chat.modelSelectTooltip" }),
+      ).toHaveTextContent("GPT-3.5 Turbo");
+    });
   });
 });

@@ -344,6 +344,7 @@ class DingTalkConfig(BaseChannelConfig):
     card_auto_layout: bool = False
     at_sender_on_reply: bool = False
     streaming_enabled: bool = False
+    share_session_in_group: bool = False
     endpoint: str = ""
 
 
@@ -776,6 +777,15 @@ class EmbeddingModelConfig(BaseModel):
         ge=1,
         description="Maximum batch size for embedding",
     )
+    health_check_timeout: float = Field(
+        default=15.0,
+        gt=0,
+        le=300,
+        description=(
+            "Per-attempt timeout in seconds for embedding connection tests "
+            "and ReMe startup health checks"
+        ),
+    )
 
 
 class RerankerConfig(BaseModel):
@@ -960,6 +970,14 @@ class ReMeLightMemoryConfig(BaseModel):
         description=(
             "Whether the memory index must be rebuilt after an embedding "
             "vector-space change"
+        ),
+    )
+
+    pending_reindex_embedding_config: EmbeddingModelConfig | None = Field(
+        default=None,
+        description=(
+            "Last indexed embedding configuration available for undo while "
+            "a vector-space change is pending"
         ),
     )
 

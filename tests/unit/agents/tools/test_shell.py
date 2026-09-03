@@ -175,6 +175,24 @@ class TestCollapseEmbeddedNewlines:
         command = 'echo "hello\nworld"'
         assert _collapse_embedded_newlines(command, "/bin/bash") == command
 
+    @patch("qwenpaw.agents.tools.shell.sys")
+    def test_unix_removes_posix_line_continuation(self, mock_sys):
+        mock_sys.platform = "linux"
+        command = "cat /tmp/.qwenpaw\\\n.secret/token.json"
+        assert (
+            _collapse_embedded_newlines(command, "/bin/sh")
+            == "cat /tmp/.qwenpaw.secret/token.json"
+        )
+
+    @patch("qwenpaw.agents.tools.shell.sys")
+    def test_unix_preserves_line_continuation_inside_single_quotes(
+        self,
+        mock_sys,
+    ):
+        mock_sys.platform = "linux"
+        command = "printf '%s' 'a\\\nb'"
+        assert _collapse_embedded_newlines(command, "/bin/sh") == command
+
     @pytest.mark.parametrize(
         "command",
         [
@@ -1113,7 +1131,7 @@ class TestExecuteShellCommand:
 
     @pytest.mark.asyncio
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_timeout")
-    @patch("qwenpaw.agents.tools.shell.get_current_workspace_dir")
+    @patch("qwenpaw.agents.tools.shell.get_tool_base_dir")
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_executable")
     async def test_simple_command_success(
         self,
@@ -1146,7 +1164,7 @@ class TestExecuteShellCommand:
 
     @pytest.mark.asyncio
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_timeout")
-    @patch("qwenpaw.agents.tools.shell.get_current_workspace_dir")
+    @patch("qwenpaw.agents.tools.shell.get_tool_base_dir")
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_executable")
     async def test_unix_multiline_command_reaches_shell_unchanged(
         self,
@@ -1175,7 +1193,7 @@ class TestExecuteShellCommand:
 
     @pytest.mark.asyncio
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_timeout")
-    @patch("qwenpaw.agents.tools.shell.get_current_workspace_dir")
+    @patch("qwenpaw.agents.tools.shell.get_tool_base_dir")
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_executable")
     async def test_command_failure(
         self,
@@ -1207,7 +1225,7 @@ class TestExecuteShellCommand:
 
     @pytest.mark.asyncio
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_timeout")
-    @patch("qwenpaw.agents.tools.shell.get_current_workspace_dir")
+    @patch("qwenpaw.agents.tools.shell.get_tool_base_dir")
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_executable")
     async def test_empty_command(
         self,
@@ -1239,7 +1257,7 @@ class TestExecuteShellCommand:
 
     @pytest.mark.asyncio
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_timeout")
-    @patch("qwenpaw.agents.tools.shell.get_current_workspace_dir")
+    @patch("qwenpaw.agents.tools.shell.get_tool_base_dir")
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_executable")
     async def test_timeout_string_converted(
         self,
@@ -1271,7 +1289,7 @@ class TestExecuteShellCommand:
 
     @pytest.mark.asyncio
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_timeout")
-    @patch("qwenpaw.agents.tools.shell.get_current_workspace_dir")
+    @patch("qwenpaw.agents.tools.shell.get_tool_base_dir")
     @patch("qwenpaw.agents.tools.shell.get_current_shell_command_executable")
     async def test_invalid_timeout_defaults(
         self,
@@ -2488,7 +2506,7 @@ async def test_execute_shell_command_win32_uses_windows_host():
             return_value=None,
         ),
         patch(
-            "qwenpaw.agents.tools.shell.get_current_workspace_dir",
+            "qwenpaw.agents.tools.shell.get_tool_base_dir",
             return_value=None,
         ),
         patch(
