@@ -27,6 +27,58 @@ from utils.helpers import log_test_step, log_test_result
 logger = logging.getLogger(__name__)
 
 
+def _clean_fork_worktrees(api_context) -> None:
+    """Remove embedded git repos that break ``git add -A``.
+
+    Two residue classes exist under the default agent workspace:
+    1. fork worktrees under ``.qwenpaw/worktrees/<id>`` (created by fork
+       cases), and
+    2. zero-commit nested repos under ``coding_projects/*/`` (created by
+       coding-mode seed cases).
+    Both make ``git add`` fail with 400. The workspace dir is read
+    dynamically from the checkpoint status endpoint — no hardcoded paths.
+    """
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    try:
+        st = api_context.get("/api/workspace/checkpoints/status")
+        if not st.ok:
+            return
+        ws = st.json().get("workspace_dir")
+        if not ws:
+            return
+        ws_path = Path(ws)
+        subprocess.run(
+            ["git", "-C", ws, "worktree", "prune"],
+            timeout=30, capture_output=True,
+        )
+        wt = ws_path / ".qwenpaw" / "worktrees"
+        if wt.is_dir():
+            shutil.rmtree(wt, ignore_errors=True)
+            logger.info("cleaned fork worktrees under %s", wt)
+        coding = ws_path / "coding_projects"
+        removed = 0
+        if coding.is_dir():
+            for sub in coding.iterdir():
+                gitdir = sub / ".git"
+                if not gitdir.is_dir():
+                    continue
+                probe = subprocess.run(
+                    ["git", "-C", str(sub), "rev-list", "--count", "HEAD"],
+                    timeout=15, capture_output=True, text=True,
+                )
+                count = (probe.stdout or "0").strip() or "0"
+                if count == "0":
+                    shutil.rmtree(gitdir, ignore_errors=True)
+                    removed += 1
+        if removed:
+            logger.info("removed .git from %d zero-commit nested repos", removed)
+    except Exception as exc:
+        logger.warning("worktree cleanup failed: %s", exc)
+
+
 @pytest.mark.integration
 @pytest.mark.p1
 @pytest.mark.coding
@@ -42,6 +94,9 @@ class TestGitLifecycleRest:
         test_name = request.node.name
         # Unique probe file per run keeps the case idempotent across reruns.
         PROBE_FILE = f"e2e_cov28_probe_{int(time.time())}.txt"
+
+        log_test_step("0. Clean leftover fork worktrees (embedded repos)")
+        _clean_fork_worktrees(api_context)
 
         log_test_step("1. Baseline status")
         st0 = api_context.get("/api/workspace/git/status")
@@ -150,6 +205,9 @@ class TestCheckpointSnapshotRestoreRest:
     ):
         test_name = request.node.name
         session_id = "e2e-cov28-ckpt-session"
+
+        log_test_step("0. Clean leftover fork worktrees (embedded repos)")
+        _clean_fork_worktrees(api_context)
 
         log_test_step("1. Seed session file + probe file, then snapshot")
         # Restore reads sessions/{channel}/{session_id}.json from the
