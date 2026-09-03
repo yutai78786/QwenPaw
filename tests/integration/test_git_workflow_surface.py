@@ -16,7 +16,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from helpers import default_http_timeout
+from helpers import default_http_timeout, remove_probe_quietly
 
 _T = default_http_timeout(20.0)
 
@@ -44,9 +44,7 @@ def _write_probe(app_server, name: str, content: str) -> None:
 
 
 def _cleanup_probe(app_server, name: str) -> None:
-    path = _project_dir(app_server) / name
-    if path.exists():
-        path.unlink()
+    remove_probe_quietly(_project_dir(app_server) / name)
 
 
 @pytest.mark.integration
