@@ -251,6 +251,30 @@ def seed_inbox_trace(
     )
 
 
+def remove_probe_quietly(path: Path, *, attempts: int = 5) -> None:
+    """Best-effort probe removal for ``finally`` blocks.
+
+    The app subprocess may still hold a handle on a file it just
+    served (download streams, atomic writers, background watchers).
+    POSIX permits unlinking an open file, but Windows raises
+    ``PermissionError`` (WinError 5/32) until the handle closes.
+
+    Retry briefly, then give up silently: probe names are unique per
+    case, so a leftover file cannot affect other tests, and a
+    housekeeping failure must not mask a passing assertion.
+    """
+    for attempt in range(attempts):
+        try:
+            if not path.exists():
+                return
+            path.unlink()
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                return
+            time.sleep(0.2 * (attempt + 1))
+
+
 def clean_inbox(working_dir: Path) -> None:
     """Remove inbox file + trace dir so the next test starts clean."""
     path = inbox_path(working_dir)
