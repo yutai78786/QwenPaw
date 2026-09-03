@@ -12,6 +12,8 @@ Run: pytest tests/test_cov_journey_deep22.py -v
 from __future__ import annotations
 
 import logging
+import time
+from typing import List
 
 import pytest
 
@@ -19,7 +21,101 @@ from utils.helpers import log_test_step, log_test_result
 
 logger = logging.getLogger(__name__)
 
-CLONE_ID = "e2e_cov22_clone"
+CLONE_NAME = "E2E Cov22 Clone"
+
+# A freshly copied agent boots asynchronously. While its startup_status is
+# pending/starting, both PATCH /toggle(enabled=false) and DELETE answer 409
+# ("still starting" / "cannot be deleted while starting"). Poll the listing
+# endpoint until the agent leaves that window instead of firing-and-forgetting.
+_NOT_READY_STATUSES = {"pending", "starting"}
+
+
+def _wait_agent_startup_settled(
+    api_context, agent_id: str, timeout_s: int = 90,
+) -> str:
+    """Block until an agent is out of the startup window.
+
+    Returns the last observed startup_status (or "" if the agent vanished).
+    """
+    deadline = time.monotonic() + timeout_s
+    status = ""
+    while time.monotonic() < deadline:
+        listing = api_context.get("/api/agents")
+        if not listing.ok:
+            time.sleep(2)
+            continue
+        payload = listing.json()
+        agents = payload.get("agents") if isinstance(payload, dict) else payload
+        entry = next(
+            (a for a in (agents or []) if a.get("id") == agent_id), None,
+        )
+        if entry is None:
+            logger.info("agent %s no longer listed", agent_id)
+            return ""
+        status = str(entry.get("startup_status") or "")
+        if status not in _NOT_READY_STATUSES:
+            logger.info("agent %s settled: %s", agent_id, status)
+            return status
+        time.sleep(2)
+    logger.warning(
+        "agent %s still %s after %ss", agent_id, status or "?", timeout_s,
+    )
+    return status
+
+
+def _list_clone_ids(api_context) -> List[str]:
+    """Return the IDs of every agent named CLONE_NAME."""
+    listing = api_context.get("/api/agents")
+    if not listing.ok:
+        logger.warning("agent listing failed [%s]", listing.status)
+        return []
+    try:
+        payload = listing.json()
+    except Exception:  # pragma: no cover - defensive
+        logger.warning("agent listing not JSON")
+        return []
+    agents = payload.get("agents") if isinstance(payload, dict) else payload
+    return [
+        a["id"]
+        for a in (agents or [])
+        if isinstance(a, dict)
+        and a.get("name") == CLONE_NAME
+        and a.get("id")
+    ]
+
+
+def _delete_agent_quietly(api_context, agent_id: str) -> bool:
+    """Delete one agent, waiting out the startup gate if it answers 409."""
+    deadline = time.monotonic() + 90
+    while time.monotonic() < deadline:
+        resp = api_context.delete(f"/api/agents/{agent_id}")
+        if resp.ok:
+            logger.info("deleted agent %s", agent_id)
+            return True
+        if resp.status == 404:
+            return True
+        if resp.status == 409:
+            logger.info("agent %s still starting; retry delete", agent_id)
+            time.sleep(3)
+            continue
+        logger.warning(
+            "delete agent %s failed [%s]: %s",
+            agent_id, resp.status, resp.text()[:150],
+        )
+        return False
+    logger.warning("gave up deleting agent %s (409 loop)", agent_id)
+    return False
+
+
+def _purge_leftover_clones(api_context) -> None:
+    """Delete every agent left over from a previous run of this case.
+
+    The copy endpoint generates the new agent ID itself
+    (``_generate_unique_id``); it does not accept a caller-supplied ID.
+    So cleanup must resolve leftovers by *name*, not by a hardcoded ID.
+    """
+    for clone_id in _list_clone_ids(api_context):
+        _delete_agent_quietly(api_context, clone_id)
 
 
 @pytest.mark.integration
@@ -35,38 +131,66 @@ class TestAgentCopyAndManageJourney:
         request: pytest.FixtureRequest,
     ):
         test_name = request.node.name
+        clone_id = None
 
-        log_test_step("1. Cleanup any leftover clone")
-        api_context.delete(f"/api/agents/{CLONE_ID}")
+        try:
+            log_test_step("1. Cleanup any leftover clone from earlier runs")
+            _purge_leftover_clones(api_context)
 
-        log_test_step("2. Copy the default agent")
-        resp = api_context.post(
-            f"/api/agents/default/copy",
-            data={"new_agent_id": CLONE_ID, "name": "E2E Cov22 Clone"},
-        )
-        logger.info("copy -> %s", resp.status)
-        assert resp.ok or resp.status == 409, (
-            f"agent copy failed [{resp.status}]: {resp.text()[:200]}"
-        )
+            log_test_step("2. Copy the default agent")
+            resp = api_context.post(
+                "/api/agents/default/copy",
+                data={"name": CLONE_NAME},
+            )
+            logger.info("copy -> %s", resp.status)
+            # Strict: the copy endpoint must succeed and must hand back the
+            # ID it actually created. Tolerating 409/404 here used to hide a
+            # leaked agent (caller-supplied ID was silently dropped) and left
+            # the clone visible in the agent switcher, which in turn broke
+            # MA-001 in test_cross_module.py.
+            assert resp.ok, (
+                f"agent copy failed [{resp.status}]: {resp.text()[:200]}"
+            )
+            body = resp.json()
+            clone_id = body.get("id")
+            assert clone_id, f"copy response has no agent id: {body!r}"
 
-        log_test_step("3. Read the clone")
-        detail = api_context.get(f"/api/agents/{CLONE_ID}")
-        assert detail.ok or detail.status == 404, (
-            f"clone read failed [{detail.status}]"
-        )
+            log_test_step("3. Read the clone")
+            detail = api_context.get(f"/api/agents/{clone_id}")
+            assert detail.ok, (
+                f"clone read failed [{detail.status}]: {detail.text()[:200]}"
+            )
 
-        log_test_step("4. Toggle the clone")
-        tog = api_context.patch(
-            f"/api/agents/{CLONE_ID}/toggle", data={"enabled": False})
-        logger.info("toggle -> %s", tog.status)
+            log_test_step("4. Wait out the startup gate, then toggle")
+            settled = _wait_agent_startup_settled(api_context, clone_id)
+            logger.info("clone startup settled as %r", settled)
+            tog = api_context.patch(
+                f"/api/agents/{clone_id}/toggle", data={"enabled": False})
+            logger.info("toggle -> %s", tog.status)
+            assert tog.ok, f"toggle failed [{tog.status}]: {tog.text()[:200]}"
 
-        log_test_step("5. Pin the clone")
-        pin = api_context.patch(
-            f"/api/agents/{CLONE_ID}/pin", data={"pinned": True})
-        logger.info("pin -> %s", pin.status)
+            log_test_step("5. Pin the clone")
+            pin = api_context.patch(
+                f"/api/agents/{clone_id}/pin", data={"pinned": True})
+            logger.info("pin -> %s", pin.status)
+            assert pin.ok, f"pin failed [{pin.status}]: {pin.text()[:200]}"
 
-        log_test_step("6. Delete the clone")
-        api_context.delete(f"/api/agents/{CLONE_ID}")
+            log_test_step("6. Delete the clone")
+            assert _delete_agent_quietly(api_context, clone_id), (
+                f"clone {clone_id} could not be deleted"
+            )
+
+            log_test_step("7. Clone is gone; no residue for later cases")
+            gone = api_context.get(f"/api/agents/{clone_id}")
+            assert gone.status == 404, (
+                f"clone still readable after delete [{gone.status}]"
+            )
+            clone_id = None
+        finally:
+            # Never leave the clone behind, even if an assertion above trips.
+            if clone_id:
+                _delete_agent_quietly(api_context, clone_id)
+            _purge_leftover_clones(api_context)
 
         log_test_result(test_name, True, 0)
 
