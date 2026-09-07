@@ -199,19 +199,112 @@ class TestFilePreviewEndpoint:
         api_context,
         request: pytest.FixtureRequest,
     ):
+        """Exercise every branch of GET /api/files/preview deterministically.
+
+        Backend order (src/qwenpaw/app/routers/files.py preview_file):
+        sensitive path -> 403 SENSITIVE_FILE_BLOCKED; outside workspace and
+        ``allow_preview_outside_workspace`` false -> 403 OUTSIDE_WORKSPACE;
+        not a file -> 404; ``os.access(R_OK)`` false -> 500; else 200.
+
+        Earlier revisions probed ``/etc/shadow`` and accepted 200/400/403/404.
+        That branch depends on the *runner's* identity: as root the file is
+        readable and the endpoint returns 200, as the unprivileged CI runner
+        ``os.access`` fails and it returns 500 -- so the case passed locally
+        and failed in CI. Every path below is identity-independent.
+        """
         test_name = request.node.name
 
-        log_test_step("1. Preview a workspace file")
-        ok = api_context.get("/api/files/preview//tmp/qwenpaw-e2e-test-work-dir/probe.txt")
-        logger.info("preview probe -> %s", ok.status)
+        from config.settings import config
 
-        log_test_step("2. Sensitive/outside path guard branches")
-        sens = api_context.get("/api/files/preview//etc/shadow")
-        assert sens.status in (200, 400, 403, 404), f"sensitive [{sens.status}]"
+        work_dir = config.working_dir
+        work_dir.mkdir(parents=True, exist_ok=True)
+        probe = work_dir / "cov24_preview_probe.txt"
+        probe_body = "e2e-cov24-preview-probe"
+        # World-readable on purpose: the 200 branch must not hinge on uid.
+        probe.write_text(probe_body, encoding="utf-8")
+        probe.chmod(0o644)
+        outside = work_dir.parent / "cov24_outside_probe.txt"
+        outside.write_text(probe_body, encoding="utf-8")
+        outside.chmod(0o644)
 
-        log_test_step("3. Missing file branch")
-        out = api_context.get("/api/files/preview//root/no-such-file-cov24.txt")
-        assert out.status in (400, 403, 404), f"missing [{out.status}]"
+        guard = api_context.get("/api/config/security/file-guard")
+        assert guard.ok, f"cannot read file-guard config [{guard.status}]"
+        original_toggle = guard.json().get("allow_preview_outside_workspace")
+
+        try:
+            log_test_step("1. Preview a file inside the workspace -> 200 + body")
+            ok = api_context.get(f"/api/files/preview/{probe}")
+            assert ok.status == 200, (
+                f"workspace preview expected 200 [{ok.status}]: {ok.text()[:200]}"
+            )
+            assert probe_body in ok.text(), (
+                f"workspace preview body mismatch: {ok.text()[:200]!r}"
+            )
+
+            log_test_step("2. Sensitive path -> 403 SENSITIVE_FILE_BLOCKED")
+            # The default sensitive list is prefix-based and is enforced
+            # regardless of whether the directory exists, so this needs no
+            # config mutation and holds under any runner identity.
+            sens = api_context.get(
+                "/api/files/preview//root/.qwenpaw.secret/cov24.txt")
+            assert sens.status == 403, (
+                f"sensitive preview expected 403 [{sens.status}]: "
+                f"{sens.text()[:200]}"
+            )
+            assert "SENSITIVE_FILE_BLOCKED" in sens.text(), (
+                f"sensitive preview reason mismatch: {sens.text()[:200]!r}"
+            )
+
+            log_test_step("3. Missing file inside the workspace -> 404")
+            out = api_context.get(
+                f"/api/files/preview/{work_dir}/cov24-no-such-file.txt")
+            assert out.status == 404, (
+                f"missing file expected 404 [{out.status}]: {out.text()[:200]}"
+            )
+
+            log_test_step("4. Outside workspace with the toggle off -> 403")
+            off = api_context.put(
+                "/api/config/security/file-guard",
+                data=json.dumps({"allow_preview_outside_workspace": False}),
+            )
+            assert off.ok, f"cannot disable outside-preview [{off.status}]"
+            blocked = api_context.get(f"/api/files/preview/{outside}")
+            assert blocked.status == 403, (
+                f"outside preview with toggle off expected 403 "
+                f"[{blocked.status}]: {blocked.text()[:200]}"
+            )
+            assert "OUTSIDE_WORKSPACE" in blocked.text(), (
+                f"outside preview reason mismatch: {blocked.text()[:200]!r}"
+            )
+
+            log_test_step("5. Same file with the toggle back on -> 200")
+            on = api_context.put(
+                "/api/config/security/file-guard",
+                data=json.dumps({"allow_preview_outside_workspace": True}),
+            )
+            assert on.ok, f"cannot re-enable outside-preview [{on.status}]"
+            allowed = api_context.get(f"/api/files/preview/{outside}")
+            assert allowed.status == 200, (
+                f"outside preview with toggle on expected 200 "
+                f"[{allowed.status}]: {allowed.text()[:200]}"
+            )
+            assert probe_body in allowed.text(), (
+                f"outside preview body mismatch: {allowed.text()[:200]!r}"
+            )
+        finally:
+            # Never leave the security toggle flipped for the cases that
+            # follow this one.
+            api_context.put(
+                "/api/config/security/file-guard",
+                data=json.dumps(
+                    {"allow_preview_outside_workspace": bool(original_toggle)},
+                ),
+            )
+            for path in (probe, outside):
+                try:
+                    path.unlink()
+                except OSError:  # pragma: no cover - cleanup best effort
+                    logger.warning("could not remove probe %s", path)
 
         log_test_result(test_name, True, 0)
 

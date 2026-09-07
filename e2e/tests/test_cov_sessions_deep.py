@@ -9,6 +9,7 @@ Run: pytest tests/test_cov_sessions_deep.py -v
 """
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -29,9 +30,41 @@ class TestSessionsDeep:
     Coverage: session list API, drawer edit, filter/sort logic.
     """
 
+    @pytest.fixture
+    def seeded_sessions(self, api_context):
+        """Create chats over the API so the list is never empty.
+
+        POST /api/chats is deterministic (no LLM round trip), unlike the
+        ensure_session_data fixture in tests/test_sessions.py which drives
+        POST /api/console/chat. Without seeding, the list renders the "No
+        data" placeholder and every interaction below would have nothing to
+        act on -- which is how this case used to "pass" without testing
+        anything.
+        """
+        created = []
+        for idx in range(3):
+            resp = api_context.post(
+                "/api/chats",
+                data=json.dumps({
+                    "name": f"e2e-cov-ss-{idx}",
+                    "session_id": f"console:e2e_cov_ss_user_{idx}",
+                    "user_id": f"e2e_cov_ss_user_{idx}",
+                    "channel": "console",
+                }),
+            )
+            assert resp.ok, f"cannot seed chat [{resp.status}]: {resp.text()[:200]}"
+            created.append(resp.json()["id"])
+        yield created
+        for chat_id in created:
+            api_context.delete(f"/api/chats/{chat_id}")
+
     @pytest.mark.test_id("COV-SS-001")
     def test_sessions_filter_sort_edit(
-        self, sessions_page: SessionsPage, request: pytest.FixtureRequest
+        self,
+        sessions_page: SessionsPage,
+        api_context,
+        seeded_sessions,
+        request: pytest.FixtureRequest,
     ):
         test_name = request.node.name
 
@@ -39,51 +72,59 @@ class TestSessionsDeep:
         sessions_page.open()
         sessions_page.wait_for_page_loaded()
 
-        log_test_step("2. Count sessions")
+        log_test_step("2. Seeded sessions are listed")
         count = sessions_page.get_session_count()
         logger.info(f"Sessions: {count}")
+        assert count >= 3, (
+            f"expected at least the 3 seeded sessions, got {count}"
+        )
 
-        log_test_step("3. Filter by channel console")
-        try:
-            sessions_page.filter_by_channel("console")
-            sessions_page.page.wait_for_timeout(1500)
-            filtered = sessions_page.get_session_count()
-            logger.info(f"After channel filter: {filtered}")
-        except Exception as exc:
-            logger.warning(f"Channel filter not drivable: {exc}")
+        log_test_step("3. Filter by channel console narrows to console rows")
+        sessions_page.filter_by_channel("console")
+        filtered = sessions_page.get_session_count()
+        logger.info(f"After channel filter: {filtered}")
+        assert filtered >= 3, (
+            f"all seeded sessions are on the console channel, so the filter "
+            f"must keep them: got {filtered}"
+        )
+        channels = {
+            sessions_page.get_session_data(row).get("channel")
+            for row in sessions_page.get_session_rows()
+        }
+        assert channels == {"console"}, (
+            f"filtered rows are not all on the console channel: {channels}"
+        )
 
-        log_test_step("4. Reset filter")
-        try:
-            sessions_page.reset_filter()
-            sessions_page.page.wait_for_timeout(1000)
-        except Exception as exc:
-            logger.warning(f"Reset filter not drivable: {exc}")
+        log_test_step("4. Clear the filter and get the full list back")
+        sessions_page.reset_filter()
+        cleared = sessions_page.get_session_count()
+        logger.info(f"After clearing filter: {cleared}")
+        assert cleared >= filtered, (
+            f"clearing the filter must not drop rows: {cleared} < {filtered}"
+        )
 
-        log_test_step("5. Sort by column")
-        try:
-            sessions_page.sort_by_column("created_at")
-            sessions_page.page.wait_for_timeout(1000)
-            logger.info("Sorted by created_at")
-        except Exception as exc:
-            logger.warning(f"Sort not drivable: {exc}")
+        log_test_step("5. Sort by CreatedAt actually changes the sort state")
+        sessions_page.sort_by_column("created_at")
+        header = sessions_page.page.locator("th").filter(
+            has_text="CreatedAt",
+        ).first
+        assert header.get_attribute("aria-sort") not in (None, "none"), (
+            "CreatedAt header reports no sort direction after sorting"
+        )
 
-        log_test_step("6. Open edit drawer for first session")
+        log_test_step("6. Open and close the edit drawer for the first session")
         rows = sessions_page.get_session_rows()
-        if rows:
-            try:
-                data = sessions_page.get_session_data(rows[0])
-                sid = data.get("session_id") or data.get("id")
-                if sid:
-                    sessions_page.click_edit(sid)
-                    logger.info("Edit drawer opened")
-                    sessions_page.page.keyboard.press("Escape")
-                    sessions_page.wait_for_drawer_close()
-                else:
-                    logger.info("Could not read session id from row")
-            except Exception as exc:
-                logger.warning(f"Edit drawer not drivable: {exc}")
-        else:
-            logger.info("No session rows present")
+        assert rows, "no session rows to open an edit drawer for"
+        data = sessions_page.get_session_data(rows[0])
+        sid = data.get("session_id") or data.get("id")
+        assert sid, f"could not read a session id from the row: {data!r}"
+        sessions_page.click_edit(sid)
+        sessions_page.wait_for_drawer_open()
+        drawer = sessions_page.page.locator(
+            '.qwenpaw-drawer-content, .qwenpaw-drawer',
+        ).first
+        assert drawer.is_visible(), "edit drawer did not become visible"
+        sessions_page.page.keyboard.press("Escape")
+        sessions_page.wait_for_drawer_close()
 
         log_test_result(test_name, True, 0)
-        logger.info(f"Test {test_name} passed")

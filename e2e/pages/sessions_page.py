@@ -40,23 +40,93 @@ class SessionsPage(BasePage):
 
     # Filter bar
     FILTER_USER_ID_INPUT = 'input[placeholder*="User ID" i], input[placeholder*="用户" i]'
-    FILTER_CHANNEL_SELECT = '.ant-select[data-placeholder*="Channel" i], .qwenpaw-select'
+    # Channel filter. Anchored on the component's own class name because the
+    # select has no id/name/aria-label/data-placeholder, and both of the
+    # previously tried anchors are wrong now:
+    #   * '.ant-select[data-placeholder*="Channel" i]' matches nothing -- the
+    #     console moved from the antd "ant-" prefix to "qwenpaw-", and the
+    #     element carries no data-placeholder attribute at all.
+    #   * the '.qwenpaw-select' fallback resolves to 2 elements (an agent
+    #     picker first, then the channel filter), so ".first" clicked the
+    #     *agent* dropdown and then timed out looking for a "console" option
+    #     among Default Agent / QA Agent.
+    # '.sessions-filter-select' is unique (count 1) and stays unique after a
+    # value is selected, unlike ':has-text("Filter by Channel")' which stops
+    # matching once the placeholder text is replaced by the chosen channel.
+    FILTER_CHANNEL_SELECT = (
+        '.sessions-filter-select, '
+        '.ant-select[data-placeholder*="Channel" i], '
+        '.qwenpaw-select[data-placeholder*="Channel" i]'
+    )
+    # Clearing the channel filter. There is no Reset button in this page --
+    # 'button:has-text("Reset")' and the Chinese variant both match 0 nodes.
+    # The select is rendered with allow-clear, so the clear icon is the real
+    # affordance; it only appears once a value is picked and the control is
+    # hovered, which reset_filter() below handles.
+    FILTER_CLEAR_ICON = '.qwenpaw-select-clear, .ant-select-clear'
+    FILTER_CHANNEL_OPTION = '.qwenpaw-select-item-option, .ant-select-option'
+    # Kept for backwards compatibility with any caller that still looks for a
+    # reset button; the page does not render one.
     FILTER_RESET_BTN = 'button:has-text("Reset"), button:has-text("重置")'
+
+    # Table column header text as rendered, for sort_by_column(). The DOM
+    # shows the human-readable header ("CreatedAt"), not the snake_case field
+    # name ("created_at") that callers pass in, so sort_by_column maps them.
+    SORT_COLUMN_HEADER = '.qwenpaw-table-column-sorters, .ant-table-column-sorters'
+    # created_at/updated_at -> rendered header text
+    SORTABLE_COLUMN_LABELS = {
+        "id": "ID",
+        "name": "Name",
+        "session_id": "SessionID",
+        "sessionid": "SessionID",
+        "user_id": "UserID",
+        "userid": "UserID",
+        "channel": "Channel",
+        "created_at": "CreatedAt",
+        "createdat": "CreatedAt",
+        "updated_at": "UpdatedAt",
+        "updatedat": "UpdatedAt",
+    }
 
     # Session table
     SESSION_TABLE = '.ant-table, .qwenpaw-table, table'
-    SESSION_ROW = '.ant-table-tbody tr, .qwenpaw-table-tbody tr, table tbody tr'
-    SESSION_TABLE_ROW = '.ant-table-tbody tr, .qwenpaw-table-tbody tr, table tbody tr'
+    # Data rows only. A rendered antd/qwenpaw table always carries two
+    # non-data rows that a bare "tbody tr" selector also matches:
+    #   * the column-width measure row (aria-hidden="true")
+    #   * the "No data" placeholder row
+    # With an empty list the bare selector therefore reports 2 rows, and with
+    # 3 real sessions it reports 4 -- so every count built on it was inflated
+    # by two. The exclusions below mirror what this suite already does in the
+    # ensure_session_data fixture in tests/test_sessions.py.
+    SESSION_ROW = (
+        '.ant-table-tbody tr:not(.ant-table-measure-row)'
+        ':not(.ant-table-placeholder), '
+        '.qwenpaw-table-tbody tr:not(.qwenpaw-table-measure-row)'
+        ':not(.qwenpaw-table-placeholder), '
+        "table tbody tr[data-row-key]"
+    )
+    SESSION_TABLE_ROW = SESSION_ROW
     SESSION_ROW_SELECTED = '.ant-table-tbody tr.ant-table-row-selected, .qwenpaw-table-tbody tr.qwenpaw-table-row-selected'
 
     # Table columns
-    SESSION_ID_COL = 'td:nth-child(1)'
-    SESSION_NAME_COL = 'td:nth-child(2)'
-    SESSION_SESSIONID_COL = 'td:nth-child(3)'
-    SESSION_USERID_COL = 'td:nth-child(4)'
-    SESSION_CHANNEL_COL = 'td:nth-child(5)'
-    SESSION_CREATEDAT_COL = 'td:nth-child(6)'
-    SESSION_UPDATEDAT_COL = 'td:nth-child(7)'
+    # The first column is the row-selection checkbox and renders no text, so
+    # the data columns start at nth-child(2). The previous 1-based mapping was
+    # off by one across the board: SESSION_ID_COL resolved to the empty
+    # checkbox cell, so find_session_row() compared against "" and never
+    # matched, which made click_edit()/click_delete() raise "Session not
+    # found"; get_session_data() returned the UserID as "channel", the
+    # Channel as "created_at", and so on. Verified against the live DOM:
+    #   th:  '' | ID | Name | SessionID | UserID | Channel | CreatedAt | UpdatedAt | Action
+    #   td:  '' | uuid | name | chan:user | user | channel | created | updated | buttons
+    SESSION_CHECKBOX_COL = 'td:nth-child(1)'
+    SESSION_ID_COL = 'td:nth-child(2)'
+    SESSION_NAME_COL = 'td:nth-child(3)'
+    SESSION_SESSIONID_COL = 'td:nth-child(4)'
+    SESSION_USERID_COL = 'td:nth-child(5)'
+    SESSION_CHANNEL_COL = 'td:nth-child(6)'
+    SESSION_CREATEDAT_COL = 'td:nth-child(7)'
+    SESSION_UPDATEDAT_COL = 'td:nth-child(8)'
+    SESSION_ACTION_COL = 'td:nth-child(9)'
 
     # Action buttons
     # Note: the system under test uses fixed="right" for the Action column in antd Table,
@@ -89,16 +159,27 @@ class SessionsPage(BasePage):
     PAGINATION_PREV = '.ant-pagination-prev'
 
     # Edit drawer
-    SESSION_DRAWER = '[class*=drawer], .ant-drawer, .qwenpaw-drawer'
-    DRAWER_TITLE = '[class*=drawer] .ant-drawer-header-title, .ant-drawer-title, .qwenpaw-drawer-title'
+    # Anchored on the drawer's content element, not on "[class*=drawer]": that
+    # substring matcher resolves to 10 nodes once a drawer is open (the drawer
+    # root, mask, content wrapper, content, header, header-title, close, title,
+    # body and footer), so expect(...).to_be_visible() fails with a strict-mode
+    # violation instead of checking anything.
+    # Verified against the live DOM for .qwenpaw-drawer-content:
+    #   closed -> 0 nodes, open -> 1 node and visible, Escape -> back to 0,
+    # which makes it correct for both to_be_visible() and to_be_hidden().
+    SESSION_DRAWER = '.qwenpaw-drawer-content, .ant-drawer-content'
+    DRAWER_TITLE = '.qwenpaw-drawer-title, .ant-drawer-title'
     DRAWER_CLOSE = '.ant-drawer-close, .qwenpaw-drawer-close'
 
     # Form fields
     FORM_NAME_INPUT = 'input[name="name"], input[placeholder*="Name" i], input[placeholder*="名称" i]'
     FORM_USERID_INPUT = 'input[name="user_id"], input[placeholder*="User ID" i], input[placeholder*="用户" i]'
     FORM_CHANNEL_SELECT = '.ant-select[name="channel"], .qwenpaw-select[name="channel"]'
-    FORM_SUBMIT_BTN = '[class*=drawer] button.ant-btn-primary, [class*=drawer] button.qwenpaw-btn-primary, button:has-text("Save"), button:has-text("保存")'
-    FORM_CANCEL_BTN = '[class*=drawer] button:has-text("Cancel"), [class*=drawer] button:has-text("取消")'
+    # Scoped through SESSION_DRAWER instead of a bare "[class*=drawer]" prefix,
+    # which matches all 10 drawer sub-elements and can bind the button lookup
+    # to the wrong subtree.
+    FORM_SUBMIT_BTN = '.qwenpaw-drawer-content button.qwenpaw-btn-primary, .ant-drawer-content button.ant-btn-primary, button:has-text("Save"), button:has-text("保存")'
+    FORM_CANCEL_BTN = '.qwenpaw-drawer-content button:has-text("Cancel"), .ant-drawer-content button:has-text("Cancel"), .qwenpaw-drawer-content button:has-text("取消"), button:has-text("Cancel"), button:has-text("取消")'
 
     # Confirmation dialog
     CONFIRM_MODAL = '.ant-modal, .qwenpaw-modal'
@@ -148,8 +229,14 @@ class SessionsPage(BasePage):
         """
         Find a session row by session ID.
 
+        Accepts either identifier form the product shows in the table: the
+        chat UUID rendered in the ID column, or the "channel:user_id" string
+        rendered in the SessionID column. Callers reach for whichever one
+        they happened to read first, so matching only one of the two columns
+        used to make the lookup silently fail.
+
         Args:
-            session_id: session ID
+            session_id: chat UUID or "channel:user_id" session identifier
 
         Returns:
             Locator of the row; None if not found.
@@ -157,11 +244,17 @@ class SessionsPage(BasePage):
         rows = self.get_session_rows()
         for row in rows:
             try:
-                id_cell = row.locator(self.SESSION_ID_COL).first
-                if session_id in id_cell.inner_text():
-                    return row
+                id_cell = row.locator(self.SESSION_ID_COL).first.inner_text()
             except Exception:
-                continue
+                id_cell = ""
+            try:
+                sid_cell = row.locator(
+                    self.SESSION_SESSIONID_COL,
+                ).first.inner_text()
+            except Exception:
+                sid_cell = ""
+            if session_id and (session_id in id_cell or session_id in sid_cell):
+                return row
         return None
 
     def find_session_by_name(self, name: str) -> Optional[Locator]:
@@ -206,33 +299,89 @@ class SessionsPage(BasePage):
         return self
 
     def filter_by_channel(self, channel: str) -> "SessionsPage":
-        """Filter by Channel."""
+        """Filter by Channel.
+
+        Opens the channel select and picks *channel* from its options. Raises
+        if the control or the option cannot be driven, so callers cannot
+        mistake a stale selector for a passing step.
+        """
         logger.info(f"Filtering by channel: {channel}")
-        self.page.locator(self.FILTER_CHANNEL_SELECT).first.click()
-        self.page.locator(f'.ant-select-option:has-text("{channel}")').first.click()
+        select = self.page.locator(self.FILTER_CHANNEL_SELECT).first
+        select.click(timeout=self.timeout)
+        option = self.page.locator(self.FILTER_CHANNEL_OPTION).filter(
+            has_text=channel,
+        ).first
+        option.click(timeout=self.timeout)
         self.wait_for_loading()
+        selected = select.inner_text(timeout=self.timeout)
+        if channel not in selected:
+            raise AssertionError(
+                f"channel filter did not take effect: expected {channel!r} "
+                f"in the select, got {selected!r}"
+            )
+        logger.info(f"Channel filter applied: {selected.strip()[:40]}")
         return self
 
     def reset_filter(self) -> "SessionsPage":
-        """Reset filters."""
-        logger.info("Resetting filters")
-        self.page.locator(self.FILTER_RESET_BTN).first.click()
+        """Clear the channel filter.
+
+        There is no Reset button on this page. The select is rendered with
+        allow-clear, so the way back to the unfiltered state is the clear
+        icon, which only shows up while a value is selected and the control
+        is hovered. Falls back to a real Reset button if the UI ever grows
+        one again.
+        """
+        logger.info("Clearing channel filter")
+        select = self.page.locator(self.FILTER_CHANNEL_SELECT).first
+        select.hover(timeout=self.timeout)
+        clear_icon = select.locator(self.FILTER_CLEAR_ICON).first
+        if clear_icon.count() == 0:
+            # Nothing selected, or the affordance changed. A real Reset
+            # button would be the only other way out.
+            legacy = self.page.locator(self.FILTER_RESET_BTN).first
+            if legacy.count() > 0:
+                legacy.click(timeout=self.timeout)
+                self.wait_for_loading()
+                return self
+            raise AssertionError(
+                "no clear icon on the channel filter and no Reset button: "
+                "cannot reset the filter"
+            )
+        clear_icon.click(timeout=self.timeout, force=True)
         self.wait_for_loading()
+        remaining = select.inner_text(timeout=self.timeout)
+        logger.info(f"Filter cleared, select now shows: {remaining.strip()[:40]}")
         return self
 
     # ========== Sorting ==========
 
     def sort_by_column(self, column_name: str) -> "SessionsPage":
-        """
-        Sort by column.
+        """Sort by a table column and verify the header reports a sort state.
 
         Args:
-            column_name: column name (ID, Name, CreatedAt, etc.)
+            column_name: either the rendered header text ("CreatedAt") or the
+                underlying field name callers naturally reach for
+                ("created_at"). Field names are mapped through
+                SORTABLE_COLUMN_LABELS because the DOM renders the
+                human-readable header, not the snake_case key.
         """
-        logger.info(f"Sorting by {column_name}")
-        sort_btn = self.page.locator(f'.ant-table-column-sorters:has-text("{column_name}")').first
-        sort_btn.click()
+        label = self.SORTABLE_COLUMN_LABELS.get(
+            column_name.lower(), column_name,
+        )
+        logger.info(f"Sorting by {column_name} (header label {label!r})")
+        sorter = self.page.locator(self.SORT_COLUMN_HEADER).filter(
+            has_text=label,
+        ).first
+        sorter.click(timeout=self.timeout)
         self.wait_for_loading()
+        header = self.page.locator("th").filter(has_text=label).first
+        direction = header.get_attribute("aria-sort")
+        if not direction or direction == "none":
+            raise AssertionError(
+                f"sorting by {label!r} did not take effect: aria-sort is "
+                f"{direction!r}"
+            )
+        logger.info(f"Sorted by {label}: aria-sort={direction}")
         return self
 
     # ========== Edit session ==========
@@ -276,9 +425,14 @@ class SessionsPage(BasePage):
         return self
 
     def select_channel(self, channel: str) -> "SessionsPage":
-        """Select Channel."""
+        """Select Channel inside the edit drawer."""
         self.page.locator(self.FORM_CHANNEL_SELECT).first.click()
-        self.page.locator(f'.ant-select-option:has-text("{channel}")').first.click()
+        # Options render as ".qwenpaw-select-item-option" now; the console
+        # moved off the antd "ant-" prefix. Keeping the old selector as a
+        # trailing fallback rather than as the only match.
+        self.page.locator(self.FILTER_CHANNEL_OPTION).filter(
+            has_text=channel,
+        ).first.click(timeout=self.timeout)
         return self
 
     def save_session(self) -> "SessionsPage":

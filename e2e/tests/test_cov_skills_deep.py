@@ -55,18 +55,41 @@ class TestSkillHubDeep:
         card = skill_pool_page.find_card_by_name(skill_name)
         assert card is not None, "Seeded skill not found in pool"
 
-        log_test_step("3. Open edit drawer and save")
+        log_test_step("3. Open the edit drawer")
         skill_pool_page.open_edit_drawer(skill_name)
-        skill_pool_page.page.wait_for_timeout(1500)
+        skill_pool_page.page.wait_for_timeout(1000)
+
+        log_test_step("4. Flip Auto Sync, save, and verify it persisted")
+        # Order matters: save_drawer() closes the drawer, so toggling the
+        # switch *after* saving can never find it. The previous revision saved
+        # first and then tried to toggle inside a closed drawer, burned the
+        # full 60s locator timeout, and the bare try/except turned that into a
+        # warning -- so the case reported PASSED having tested nothing.
+        before = SkillPoolPage.get_pool_auto_sync(api_context, skill_name)
+        switch = skill_pool_page.page.locator(
+            skill_pool_page.AUTO_SYNC_SWITCH,
+        ).first
+        assert switch.count() > 0, "Auto Sync switch is missing from the drawer"
+        aria_before = switch.get_attribute("aria-checked")
+        logger.info("auto_sync before: api=%s aria-checked=%s", before, aria_before)
+
+        skill_pool_page.toggle_auto_sync_switch()
+        aria_after = skill_pool_page.page.locator(
+            skill_pool_page.AUTO_SYNC_SWITCH,
+        ).first.get_attribute("aria-checked")
+        assert aria_after != aria_before, (
+            f"clicking Auto Sync did not flip the switch: "
+            f"{aria_before} -> {aria_after}"
+        )
+
         skill_pool_page.save_drawer()
         skill_pool_page.page.wait_for_timeout(1500)
-
-        log_test_step("4. Toggle auto-sync switch")
-        try:
-            skill_pool_page.toggle_auto_sync_switch()
-            skill_pool_page.page.wait_for_timeout(1000)
-        except Exception as exc:
-            logger.warning(f"auto-sync toggle not drivable: {exc}")
+        after = SkillPoolPage.get_pool_auto_sync(api_context, skill_name)
+        logger.info("auto_sync after: api=%s", after)
+        assert after != before, (
+            f"saving the drawer did not persist Auto Sync: "
+            f"still {after!r} (was {before!r})"
+        )
 
         log_test_step("5. Open workspace skills page and verify list")
         skills_page.open()

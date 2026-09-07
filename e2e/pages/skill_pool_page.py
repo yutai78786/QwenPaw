@@ -171,3 +171,24 @@ class SkillPoolPage(BasePage):
             logger.info("delete_pool_skill(%s) -> HTTP %s", name, resp.status)
         except Exception as exc:  # noqa: BLE001 - cleanup must never raise
             logger.warning("delete_pool_skill(%s) failed: %s", name, exc)
+
+    @staticmethod
+    def get_pool_auto_sync(api_context, name: str) -> Optional[bool]:
+        """Read the persisted ``auto_sync`` flag via ``GET /api/skills/pool/{name}``.
+
+        Lets a case assert that flipping the Auto Sync switch in the drawer
+        and saving actually reached the backend, instead of only checking that
+        the click did not raise. Returns None when the skill cannot be read.
+        """
+        resp = api_context.get(f"/api/skills/pool/{name}")
+        if not resp.ok:
+            logger.warning(
+                "get_pool_auto_sync(%s) -> HTTP %s", name, resp.status,
+            )
+            return None
+        try:
+            value = resp.json().get("auto_sync")
+        except Exception as exc:  # noqa: BLE001 - keep callers simple
+            logger.warning("get_pool_auto_sync(%s) bad payload: %s", name, exc)
+            return None
+        return bool(value)
