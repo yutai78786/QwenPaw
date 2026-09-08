@@ -1,6 +1,6 @@
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithProviders } from "@/test/common_setup";
 import SessionProjectDirectory from "./SessionProjectDirectory";
 
@@ -92,10 +92,6 @@ describe("SessionProjectDirectory", () => {
       name: "reports",
       path: "/projects/reports",
     });
-  });
-
-  afterEach(() => {
-    cleanup();
   });
 
   const openPanel = async (user: ReturnType<typeof userEvent.setup>) =>
@@ -452,10 +448,6 @@ describe("SessionProjectDirectory session scope direct path input (#7588)", () =
     );
   });
 
-  afterEach(() => {
-    cleanup();
-  });
-
   const openSessionPanel = async (user: ReturnType<typeof userEvent.setup>) =>
     user.click(
       await screen.findByRole("button", {
@@ -581,9 +573,9 @@ describe("SessionProjectDirectory session scope direct path input (#7588)", () =
       await screen.findByText("Not a directory: /nope"),
     ).toBeInTheDocument();
     // Previously bound directories are still rendered.
-    // The button shows the primary directory name and count (·2).
-    expect(within(container).getByText("alpha")).toBeInTheDocument();
-    expect(within(container).getByText("·2")).toBeInTheDocument();
+    // Use within(container) to avoid matching antd Tooltip portal in document.body
+    expect(within(container).getByText("/projects/alpha")).toBeInTheDocument();
+    expect(within(container).getByText("/projects/beta")).toBeInTheDocument();
   });
 
   it("does nothing destructive on Enter with the current primary", async () => {
