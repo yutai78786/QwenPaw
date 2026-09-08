@@ -569,7 +569,9 @@ describe("SessionProjectDirectory session scope direct path input (#7588)", () =
     mockSetProjectDirs.mockRejectedValueOnce(
       new Error("Not a directory: /nope"),
     );
-    const { container } = renderWithProviders(<SessionProjectDirectory scope={sessionScope} />);
+    const { container } = renderWithProviders(
+      <SessionProjectDirectory scope={sessionScope} />,
+    );
 
     await openSessionPanel(user);
     await user.type(await getPathInput(), "/nope{Enter}");
