@@ -12,11 +12,15 @@ on:
     # after the author leaves draft state.
     types: [opened, synchronize, reopened, ready_for_review]
     branches: [main, master, dev, develop]
+  pull_request_target:
+    # Fork PRs trigger pull_request_target instead of pull_request
+    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main, master, dev, develop]
 
 jobs:
   spam-gate:
     name: PR Spam Gate
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'pull_request_target'
     uses: ./.github/workflows/pr-spam-gate.yml
     with:
       author: ${{ github.event.pull_request.user.login }}
