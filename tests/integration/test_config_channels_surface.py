@@ -128,25 +128,15 @@ def test_conflict_check_missing_identity_fields(app_server) -> None:
     ["wechat", "wecom", "dingtalk", "feishu", "qq"],
 )
 def test_qrcode_endpoint_supported_channels(app_server, channel) -> None:
-    """QR endpoints exist for the five handler-backed channels.
-
-    Fetch may fail without real credentials, but the handler registry
-    lookup and fetch attempt run in the subprocess either way.
-    """
+    """The five handler-backed channels render a QR image (200 + base64)."""
     resp = app_server.api_request(
         "GET",
         f"{_BASE}/{channel}/qrcode",
         timeout=_T,
     )
-    assert resp.status_code in (
-        200,
-        400,
-        404,
-        409,
-        500,
-        502,
-        504,
-    ), app_server.logs_tail()
+    assert resp.status_code == 200, app_server.logs_tail()
+    body = resp.json()
+    assert body["qrcode_img"].startswith("iVBORw0KGgo"), body
 
 
 @pytest.mark.integration
@@ -164,14 +154,15 @@ def test_qrcode_endpoint_unsupported_channel_404(app_server) -> None:
 @pytest.mark.integration
 @pytest.mark.p1
 def test_qrcode_status_unknown_token(app_server) -> None:
-    """Polling with an unknown token is a contract response."""
+    """Polling with an unknown token reports a failed status."""
     resp = app_server.api_request(
         "GET",
         f"{_BASE}/dingtalk/qrcode/status",
         params={"token": "integ-no-such-token"},
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 404, 410), app_server.logs_tail()
+    assert resp.status_code == 200, app_server.logs_tail()
+    assert resp.json()["status"] == "fail", resp.json()
 
 
 @pytest.mark.integration
@@ -189,13 +180,14 @@ def test_channel_health_not_running_404(app_server) -> None:
 @pytest.mark.integration
 @pytest.mark.p1
 def test_channel_restart_not_running_404(app_server) -> None:
-    """Restarting a channel that never started is a 404 contract."""
+    """Restarting a channel that never started is a 404."""
     resp = app_server.api_request(
         "POST",
         f"{_BASE}/sip/restart",
         timeout=_T,
     )
-    assert resp.status_code in (200, 404, 500), app_server.logs_tail()
+    assert resp.status_code == 404, app_server.logs_tail()
+    assert "not running" in resp.json()["detail"], resp.json()
 
 
 @pytest.mark.integration
