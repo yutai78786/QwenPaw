@@ -50,13 +50,17 @@ def test_list_agents(app_server) -> None:
 @pytest.mark.integration
 @pytest.mark.p1
 def test_memory_runtime_status_default_agent(app_server) -> None:
-    """Runtime status for the default agent is a contract response."""
+    """Runtime status for the default agent reports worker + auto-memory."""
     resp = app_server.api_request(
         "GET",
         f"{_BASE}/default/memory/runtime-status",
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 503), app_server.logs_tail()
+    assert resp.status_code == 200, app_server.logs_tail()
+    body = resp.json()
+    assert body["worker"]["status"] == "idle", body
+    assert body["worker"]["tasks_running"] == 0, body
+    assert body["auto_memory"]["enabled"] is True, body
 
 
 @pytest.mark.integration
@@ -73,22 +77,31 @@ def test_memory_runtime_status_unknown_agent_404(app_server) -> None:
 
 @pytest.mark.integration
 @pytest.mark.p1
-def test_memory_status_default_agent(app_server) -> None:
-    """ReMe memory status for the default agent is contractual.
+@pytest.mark.xfail(
+    reason=(
+        "ReMe memory/status returns a raw 500 when the background job "
+        "has not finished starting (reme_status() raises RuntimeError "
+        "'Dependency keyword_index accessed before start()', uncaught by "
+        "the endpoint). Should be 503. Tracked: Aone #86306608. Remove "
+        "this xfail once the endpoint maps the unready state to 503 - "
+        "the test will XPASS and remind us."
+    ),
+    strict=True,
+)
+def test_memory_status_default_agent_503_when_ready(app_server) -> None:
+    """ReMe memory status should be 200 or 503, never a raw 500.
 
-    Accepts 500 alongside 200/400/503: when the ReMe background job
-    has not finished starting, ``reme_status()`` raises RuntimeError
-    ("Dependency keyword_index accessed before start()") which the
-    endpoint does not catch, yielding a raw 500. Same unhandled-error
-    -> 500 pattern tracked as Aone #86253047; widened so the suite
-    stays green across platforms until the endpoint maps it to 503.
+    The raw 500 on an unready ReMe is a known defect (Aone #86306608);
+    this asserts the *correct* contract and is xfailed until fixed, so
+    the suite stays green without hiding the defect inside a widened
+    status-code set.
     """
-    resp = app_server.api_request(
+    resp = _tolerant_request(
+        app_server,
         "GET",
         f"{_BASE}/default/memory/status",
-        timeout=_T,
     )
-    assert resp.status_code in (200, 400, 500, 503), app_server.logs_tail()
+    assert resp.status_code in (200, 503), resp.text
 
 
 @pytest.mark.integration
@@ -118,14 +131,17 @@ def test_memory_reindex_unknown_agent_404(app_server) -> None:
 @pytest.mark.integration
 @pytest.mark.p1
 def test_memory_reindex_default_agent(app_server) -> None:
-    """Reindex on the default agent hits the backend gate."""
+    """Reindex on the default agent completes and echoes the scope."""
     resp = _tolerant_request(
         app_server,
         "POST",
         f"{_BASE}/default/memory/reindex",
         params={"scope": "bm25"},
     )
-    assert resp.status_code in (200, 400, 409, 503), app_server.logs_tail()
+    assert resp.status_code == 200, app_server.logs_tail()
+    body = resp.json()
+    assert body["status"] == "completed", body
+    assert body["scope"] == "bm25", body
 
 
 @pytest.mark.integration
