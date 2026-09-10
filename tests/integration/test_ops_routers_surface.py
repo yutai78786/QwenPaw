@@ -57,14 +57,16 @@ def test_checkpoint_gc_settings(app_server) -> None:
 @pytest.mark.integration
 @pytest.mark.p1
 def test_checkpoint_restore_preview(app_server) -> None:
-    """Restore preview validates required fields before lookup."""
+    """Restore preview rejects a body missing the required ``commit``."""
     resp = app_server.api_request(
         "POST",
         "/api/workspace/checkpoints/restore/preview",
         json={"snapshot_id": "integ-no-such-snapshot"},
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 404, 422), app_server.logs_tail()
+    assert resp.status_code == 422, app_server.logs_tail()
+    detail = resp.json()["detail"]
+    assert any(d["loc"][-1] == "commit" for d in detail), detail
 
 
 @pytest.mark.integration
@@ -76,7 +78,8 @@ def test_checkpoint_gc_preview(app_server) -> None:
         "/api/workspace/checkpoints/gc/preview",
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 404, 422), app_server.logs_tail()
+    assert resp.status_code == 422, app_server.logs_tail()
+    assert resp.json()["detail"][0]["msg"] == "Field required", resp.json()
 
 
 @pytest.mark.integration

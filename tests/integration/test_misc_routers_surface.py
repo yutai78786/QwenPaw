@@ -29,20 +29,24 @@ def test_skills_workspaces(app_server) -> None:
 @pytest.mark.integration
 @pytest.mark.p1
 def test_skills_hub_search(app_server) -> None:
-    """Hub search endpoint is a contract response."""
+    """Hub search returns a list, or a 5xx when the upstream is down.
+
+    This endpoint reaches an external skill hub; CI runners may not have
+    network. So 200 is verified structurally (a JSON list) and 502/503 is
+    accepted as a network-degradation contract, but a 200 with a
+    malformed body or a 4xx (which would mean the handler itself broke)
+    still fails.
+    """
     resp = app_server.api_request(
         "GET",
         "/api/skills/hub/search",
         params={"keyword": "integ"},
         timeout=_T,
     )
-    assert resp.status_code in (
-        200,
-        400,
-        404,
-        502,
-        503,
-    ), app_server.logs_tail()
+    if resp.status_code == 200:
+        assert isinstance(resp.json(), list), resp.text
+    else:
+        assert resp.status_code in (502, 503), app_server.logs_tail()
 
 
 @pytest.mark.integration
@@ -136,14 +140,24 @@ def test_plugins_status_unknown(app_server) -> None:
 @pytest.mark.integration
 @pytest.mark.p1
 def test_plugins_market_search(app_server) -> None:
-    """Market search is a contract response."""
+    """Market search returns a structured result, or 5xx when offline.
+
+    Reaches an external plugin market; CI may lack network. A 200 is
+    verified structurally (success flag + data.total), 502/503 accepted
+    as network degradation; anything else fails.
+    """
     resp = app_server.api_request(
         "GET",
         "/api/plugins/market/search",
         params={"keyword": "integ"},
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 502, 503), app_server.logs_tail()
+    if resp.status_code == 200:
+        body = resp.json()
+        assert body["success"] is True, body
+        assert isinstance(body["data"]["total"], int), body
+    else:
+        assert resp.status_code in (502, 503), app_server.logs_tail()
 
 
 @pytest.mark.integration
@@ -185,10 +199,11 @@ def test_console_inbox_traces_unknown_run(app_server) -> None:
 @pytest.mark.integration
 @pytest.mark.p1
 def test_console_chat_task_unknown(app_server) -> None:
-    """Chat task lookup for an unknown task id is contractual."""
+    """Chat task lookup for an unknown task id is a 404."""
     resp = app_server.api_request(
         "GET",
         "/api/console/chat/task/integ-no-such-task",
         timeout=_T,
     )
-    assert resp.status_code in (200, 404, 410), app_server.logs_tail()
+    assert resp.status_code == 404, app_server.logs_tail()
+    assert "not found" in resp.json()["detail"].lower(), resp.json()

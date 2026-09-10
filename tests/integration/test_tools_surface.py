@@ -164,7 +164,7 @@ def test_async_execution_missing_body_422(app_server) -> None:
 @pytest.mark.integration
 @pytest.mark.p1
 def test_update_tool_config_valid_tool(app_server) -> None:
-    """Config update with a valid tool and empty config succeeds."""
+    """Config update with a valid builtin tool and empty config succeeds."""
     name = _pick_builtin_tool(app_server)
     resp = app_server.api_request(
         "POST",
@@ -172,7 +172,8 @@ def test_update_tool_config_valid_tool(app_server) -> None:
         json={"config": {}},
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 409), app_server.logs_tail()
+    assert resp.status_code == 200, app_server.logs_tail()
+    assert resp.json()["status"] == "success", resp.json()
 
 
 @pytest.mark.integration
