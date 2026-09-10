@@ -218,10 +218,13 @@ def test_agent_list_carries_order(app_server) -> None:
 @pytest.mark.integration
 @pytest.mark.p1
 def test_agent_memory_graph_default(app_server) -> None:
-    """Memory graph endpoint for the default agent is contractual."""
+    """Memory graph for the default agent returns a versioned graph."""
     resp = app_server.api_request(
         "GET",
         f"{_BASE}/default/memory/graph",
         timeout=_T,
     )
-    assert resp.status_code in (200, 400, 404, 503), app_server.logs_tail()
+    assert resp.status_code == 200, app_server.logs_tail()
+    body = resp.json()
+    assert body["version"] == 1, body
+    assert isinstance(body["nodes"], list), body

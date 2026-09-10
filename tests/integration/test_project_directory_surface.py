@@ -177,19 +177,20 @@ def test_browse_create_missing_parent_400(app_server) -> None:
 
 @pytest.mark.integration
 @pytest.mark.p1
-def test_clone_project_invalid_url_contract(app_server) -> None:
-    """Clone with an unparsable URL returns a contract status."""
+def test_clone_project_invalid_url_streams_error(app_server) -> None:
+    """Clone is an SSE endpoint: HTTP 200, git failure reported in-stream.
+
+    The endpoint streams progress, so an unparsable URL does not change
+    the HTTP status - it surfaces as an ``{"type": "error"}`` SSE event
+    carrying the ``git clone`` failure. Assert both: 200 and the in-stream
+    error, so a silent success or a missing error event would fail.
+    """
     resp = app_server.api_request(
         "POST",
         f"{_BASE}/clone",
         json={"url": "integ-not-a-url", "name": "integ-clone"},
         timeout=_T,
     )
-    assert resp.status_code in (
-        200,
-        202,
-        400,
-        409,
-        422,
-        500,
-    ), app_server.logs_tail()
+    assert resp.status_code == 200, app_server.logs_tail()
+    assert '"type": "error"' in resp.text, resp.text[:300]
+    assert "git clone" in resp.text, resp.text[:300]
