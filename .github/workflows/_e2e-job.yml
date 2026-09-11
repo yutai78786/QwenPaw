@@ -24,7 +24,15 @@ jobs:
   e2e:
     name: E2E Playwright Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # 50 min, raised from 45: the p1 shard measured 39.1 min against the 45 min
+    # ceiling (13% headroom left), and a pending suite expansion would push one
+    # shard past it. Per-shard cost after rebalancing cases by measured duration
+    # is ~29.3 min, so 50 min leaves ~41% headroom while still surfacing a
+    # genuinely hung shard quickly enough to be useful. Deliberately NOT higher:
+    # at 75-90 min a real hang would only be reported that late, which weakens
+    # the gate. This stays below the slowest job in the nightly sweep (Windows
+    # integration, ~71 min), so the overall sweep duration is unchanged.
+    timeout-minutes: 50
     environment: staging
 
     env:
