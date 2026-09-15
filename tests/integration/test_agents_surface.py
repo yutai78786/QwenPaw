@@ -77,24 +77,22 @@ def test_memory_runtime_status_unknown_agent_404(app_server) -> None:
 
 @pytest.mark.integration
 @pytest.mark.p1
-@pytest.mark.xfail(
-    reason=(
-        "ReMe memory/status returns a raw 500 when the background job "
-        "has not finished starting (reme_status() raises RuntimeError "
-        "'Dependency keyword_index accessed before start()', uncaught by "
-        "the endpoint). Should be 503. Tracked: Aone #86306608. Remove "
-        "this xfail once the endpoint maps the unready state to 503 - "
-        "the test will XPASS and remind us."
-    ),
-    strict=True,
-)
 def test_memory_status_default_agent_503_when_ready(app_server) -> None:
     """ReMe memory status should be 200 or 503, never a raw 500.
 
-    The raw 500 on an unready ReMe is a known defect (Aone #86306608);
-    this asserts the *correct* contract and is xfailed until fixed, so
-    the suite stays green without hiding the defect inside a widened
-    status-code set.
+    This asserted the *correct* contract while the defect was live: an
+    unready ReMe made ``reme_status()`` raise ``RuntimeError('Dependency
+    keyword_index accessed before start()')`` and the endpoint leaked it
+    as a bare 500, so the case carried a ``strict=True`` xfail (Aone
+    #86306608) to keep the suite green without widening the accepted
+    status-code set to hide the bug.
+
+    Upstream fixed it in 163146ca "fix(memory): return actionable status
+    for unavailable routes (#7544)", which catches exactly that
+    ``RuntimeError`` and maps it to 503. The strict xfail then XPASSed on
+    CI (run 34952328442, ubuntu py3.11 p1) — the reminder working as
+    designed — so the marker is removed here and the assertion stands on
+    its own.
     """
     resp = _tolerant_request(
         app_server,
