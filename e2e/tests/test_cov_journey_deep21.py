@@ -15,6 +15,13 @@ import os
 
 import pytest
 
+# 🔴 TEMPORARY probe marker (branch tmp/e2e-duration-probe only).
+# Added solely to let fork CI dispatch select this file via -m, because
+# e2e-integration.yml exposes only a marker expression (it does not pass
+# the node_ids_file input of _e2e-job.yml). Discarded with the branch.
+# NEVER merge into the coverage PR.
+pytestmark = pytest.mark.probe_a
+
 from config.settings import config
 from pages.chat_page import ChatPage
 from utils.helpers import log_test_step, log_test_result
