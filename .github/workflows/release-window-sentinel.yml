@@ -35,10 +35,23 @@ on:
 
 permissions:
   statuses: write
+  # Reading the "release-window-active" lock-marker label goes through the
+  # labels endpoint, which belongs to the issues permission scope. Today the
+  # GET works without it because the repository is public (GitHub allows
+  # unauthenticated reads of public resources) — but that would silently break
+  # if the repo ever went private: this job would stop seeing the label, take
+  # the else branch and stamp EVERY PR green during a release (fail-open).
+  # Declaring it explicitly removes that hidden dependency at zero cost.
+  issues: read
 
 jobs:
   stamp:
     runs-on: ubuntu-latest
+    # A hung `gh api` here would block the PR event indefinitely. The stamp is
+    # two requests; anything over 5 minutes is a hang, not slowness. Failing
+    # leaves the head commit unstamped, which a required check treats as
+    # "not reported" — blocked, i.e. fail-closed.
+    timeout-minutes: 5
     steps:
       - name: Stamp the Release Window status on this PR
         env:

@@ -123,8 +123,10 @@ function StaticMemoryProvider({ children }: { children: ReactNode }) {
 
 function MemoryForm({
   withRuntimeStatus = false,
+  autoFinEnabled = false,
 }: {
   withRuntimeStatus?: boolean;
+  autoFinEnabled?: boolean;
 }) {
   const [form] = Form.useForm();
   const Provider = withRuntimeStatus ? RuntimeProvider : StaticMemoryProvider;
@@ -136,6 +138,10 @@ function MemoryForm({
           reme_light_memory_config: {
             auto_memory_interval: 0,
             dream_cron_enabled: false,
+            auto_fin_cron_enabled: autoFinEnabled,
+            auto_fin_cron: "0 18 * * *",
+            auto_fin_topics: "黄金,机器人,半导体",
+            auto_fin_window_hours: 24,
             auto_memory_search_config: { enabled: false, max_results: 5 },
             embedding_model_config: {},
           },
@@ -178,6 +184,7 @@ function ConfiguredEmbeddingForm({
             api_key: "secret",
             dimensions: 1024,
             enable_cache: true,
+            health_check_timeout: 15,
           },
         },
       }}
@@ -591,7 +598,7 @@ describe("ReMe runtime status", () => {
       screen.getByText("agentConfig.memoryAutoMemoryEnabledSummary"),
     ).toBeInTheDocument();
     expect(
-      screen.getByText("agentConfig.memoryRecentTasksEmpty"),
+      screen.getByText("agentConfig.autoMemoryRecentTasksEmpty"),
     ).toBeInTheDocument();
 
     fireEvent.click(diagnosticsButton);
@@ -663,9 +670,132 @@ describe("long-term memory defaults", () => {
       switchInRow(screen.getByText("agentConfig.memoryAutoRecallTitle")),
     ).toHaveAttribute("aria-checked", "false");
   });
+
+  it("renders collapsed Auto Fin settings beside Daily Paper", () => {
+    renderWithProviders(<MemoryForm />);
+
+    const sourceToggle = screen.getByRole("button", {
+      name: /agentConfig\.memoryAutoFinTitle/,
+    });
+    expect(sourceToggle).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByText("agentConfig.autoFinWindowHours"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: "agentConfig.autoFinDocumentation",
+      }),
+    ).toHaveAttribute("href", "https://qwenpaw.agentscope.io/docs/memory");
+
+    fireEvent.click(sourceToggle);
+
+    expect(sourceToggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("agentConfig.autoFinCron")).toBeInTheDocument();
+    expect(screen.getByText("agentConfig.autoFinTopics")).toBeInTheDocument();
+    expect(
+      screen.getByText("agentConfig.autoFinWindowHours"),
+    ).toBeInTheDocument();
+    expect(screen.getByDisplayValue("0 18 * * *")).toBeDisabled();
+    expect(screen.getByDisplayValue("黄金,机器人,半导体")).toBeDisabled();
+    expect(screen.getByDisplayValue("24")).toBeDisabled();
+    expect(
+      screen.getByText("agentConfig.autoFinDisclaimer"),
+    ).toBeInTheDocument();
+  });
+
+  it("expands Auto Fin settings when the initial config is enabled", async () => {
+    await act(async () => {
+      renderWithProviders(<MemoryForm autoFinEnabled />);
+    });
+
+    const sourceToggle = screen.getByRole("button", {
+      name: /agentConfig\.memoryAutoFinTitle/,
+    });
+    await waitFor(() => {
+      expect(sourceToggle).toHaveAttribute("aria-expanded", "true");
+    });
+
+    const windowInput = screen.getByDisplayValue("24");
+    expect(windowInput).toBeEnabled();
+    expect(windowInput).toHaveAttribute("aria-valuemin", "1");
+    expect(windowInput).toHaveAttribute("aria-valuemax", "168");
+  });
 });
 
 describe("embedding card separation", () => {
+  it("allows fractional health check timeout input without clamping", () => {
+    renderWithProviders(<ConfiguredEmbeddingForm />);
+
+    const timeoutInput = screen.getByLabelText(
+      "agentConfig.embeddingHealthCheckTimeout",
+    ) as HTMLInputElement;
+    expect(timeoutInput).not.toHaveAttribute("aria-valuemin");
+    expect(timeoutInput).not.toHaveAttribute("aria-valuemax");
+    expect(timeoutInput).toHaveAttribute("step", "0.001");
+    fireEvent.change(timeoutInput, { target: { value: "1.5" } });
+    fireEvent.blur(timeoutInput);
+    expect(Number(timeoutInput.value)).toBe(1.5);
+  });
+
+  it.each(["0", "-1", "300.0001"])(
+    "reports invalid health check timeout %s without rewriting it",
+    async (value) => {
+      const testEmbedding = vi.spyOn(api, "testEmbedding");
+      renderWithProviders(<ConfiguredEmbeddingForm />);
+
+      const timeoutInput = screen.getByLabelText(
+        "agentConfig.embeddingHealthCheckTimeout",
+      ) as HTMLInputElement;
+      fireEvent.change(timeoutInput, { target: { value } });
+      fireEvent.blur(timeoutInput);
+
+      expect(
+        await screen.findByText("agentConfig.embeddingHealthCheckTimeoutRange"),
+      ).toBeInTheDocument();
+      expect(Number(timeoutInput.value)).toBe(Number(value));
+
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", {
+            name: "agentConfig.embeddingTestConnection",
+          }),
+        );
+      });
+      expect(testEmbedding).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["0.001", "300"])(
+    "tests the embedding service with valid boundary timeout %s",
+    async (value) => {
+      const testEmbedding = vi.spyOn(api, "testEmbedding").mockResolvedValue({
+        success: true,
+        configured_dimensions: 1024,
+        actual_dimensions: 1024,
+        latency_ms: 1,
+        message: "ok",
+      });
+      renderWithProviders(<ConfiguredEmbeddingForm />);
+
+      const timeoutInput = screen.getByLabelText(
+        "agentConfig.embeddingHealthCheckTimeout",
+      ) as HTMLInputElement;
+      fireEvent.change(timeoutInput, { target: { value } });
+      fireEvent.blur(timeoutInput);
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "agentConfig.embeddingTestConnection",
+        }),
+      );
+
+      await waitFor(() =>
+        expect(testEmbedding).toHaveBeenCalledWith(
+          expect.objectContaining({ health_check_timeout: Number(value) }),
+        ),
+      );
+    },
+  );
+
   it("keeps embedding settings out of the long-term memory card", async () => {
     renderWithProviders(<MemoryForm />);
 
