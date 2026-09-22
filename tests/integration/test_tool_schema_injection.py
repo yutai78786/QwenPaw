@@ -239,17 +239,20 @@ class TestToolSchemaInjection:
             assert tools, f"turn {turn_index} sent an empty tools array"
             for tool in tools:
                 assert isinstance(
-                    tool, dict
+                    tool,
+                    dict,
                 ), f"tool entry not a dict: {tool!r}"
                 assert (
                     tool.get("type") == "function"
                 ), f"tool entry has no type=function: {sorted(tool)}"
                 func = tool.get("function")
                 assert isinstance(
-                    func, dict
+                    func,
+                    dict,
                 ), f"tool entry has no function object: {sorted(tool)}"
                 assert isinstance(
-                    func.get("name"), str
+                    func.get("name"),
+                    str,
                 ), f"function.name missing or not a string: {sorted(func)}"
                 assert func["name"], "function.name is empty"
                 assert (
