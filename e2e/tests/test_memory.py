@@ -120,8 +120,12 @@ class TestWorkspaceMemoryMd:
         memory_page.open_workspace()
 
         log_test_step("3. MEMORY.md row is visible")
-        # The file list renders each entry as a div with class
-        # *fileItemName* — text-based locator is enough.
+        # Since #6504 the file list renders each entry as a
+        # ``<button class*="treeRow">`` holding a glyph svg + one name span;
+        # the old ``div.fileItemName`` shape is gone. The text-based locator
+        # below is shape-agnostic, so it keeps working -- but do NOT "help" it
+        # by adding a fileItem class selector: that family matches zero nodes
+        # and silently turns assertions into no-ops.
         expect(
             memory_page.page.locator('text="MEMORY.md"').first
         ).to_be_visible(timeout=memory_page.timeout)

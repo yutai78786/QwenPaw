@@ -34,16 +34,43 @@ class FilesPage(BasePage):
     PAGE_URL = WORKSPACE_URL
 
     # ========== Selector definitions ==========
+    #
+    # Re-anchored after the #6504 frontend redesign (2026-08-06). The old
+    # ``div[class*="fileItem"]`` family was removed from the console source,
+    # so every selector below matched zero elements and the file-list cases
+    # silently self-skipped ("No file items found") while still counting as
+    # green in the release gate.
+    #
+    # Verified against the live DOM (port 6266, qwenpaw 2.2.0) on 2026-09-20:
+    #   * a Workspace file row is ``<button class*="treeRow">`` holding one
+    #     FileGlyph svg + one ``<span>{name}</span>`` -- there is no separate
+    #     name/meta sub-element any more, and rows are <button> not <div>;
+    #   * directory rows share ``treeRow`` but carry ``aria-expanded``;
+    #   * the file enable-switch and drag handle exist ONLY on the Profile
+    #     source (``profileRow``), not on Workspace files.
 
-    # Page load indicator
-    PAGE_LOAD_INDICATOR = 'div[class*="fileItem"]'
+    # Page load indicator: the Files page always renders the source tablist
+    # (workspace/profile/daily/digest) and, once a tree is loaded, treeRow(s).
+    PAGE_LOAD_INDICATOR = '[role="tab"][data-source], [class*="treeRow"]'
 
-    # File item selectors
-    FILE_ITEM_SELECTOR = 'div[class*="fileItem"]'
-    FILE_NAME_SELECTOR = 'div[class*="fileItemName"]'
-    FILE_META_SELECTOR = 'div[class*="fileItemMeta"]'
-    SWITCH_SELECTOR = 'button.qwenpaw-switch[role="switch"]'
-    DRAG_HANDLE_SELECTOR = 'div[class*="dragHandle"]'
+    # Workspace file rows (exclude directories, which carry aria-expanded).
+    FILE_ITEM_SELECTOR = '[class*="treeRow"]:not([aria-expanded])'
+    DIR_ITEM_SELECTOR = '[class*="treeRow"][aria-expanded]'
+    # The file name is the row's own text (button > svg + span); the span is
+    # the only text node, so the row's inner_text is the file name.
+    FILE_NAME_SELECTOR = 'span'
+    # NOTE: there is deliberately no FILE_META_SELECTOR / get_file_meta here.
+    # #6504 removed the per-row meta sub-element; a constant that matches zero
+    # nodes plus an accessor that silently returns "" is exactly the shape
+    # that let the file-list cases self-skip for 45 days while the release
+    # gate counted them as green.
+
+    # The enable-switch + drag handle live on the Profile source only.
+    PROFILE_TAB_SELECTOR = '[role="tab"][data-source="profile"]'
+    WORKSPACE_TAB_SELECTOR = '[role="tab"][data-source="workspace"]'
+    PROFILE_ROW_SELECTOR = '[class*="profileRow"]'
+    SWITCH_SELECTOR = '[class*="profileRow"] button.qwenpaw-switch[role="switch"]'
+    DRAG_HANDLE_SELECTOR = '[class*="profileRow"] [class*="dragHandle"]'
 
     # ========== Navigation ==========
 
@@ -75,13 +102,6 @@ class FilesPage(BasePage):
             return name_element.inner_text()
         return ""
 
-    def get_file_meta(self, item: Locator) -> str:
-        """Return the file metadata."""
-        meta_element = item.locator(self.FILE_META_SELECTOR).first
-        if meta_element.count() > 0:
-            return meta_element.inner_text()
-        return ""
-
     def click_file(self, item: Locator) -> "FilesPage":
         """Click a file to open the editor."""
         item.click()
@@ -89,7 +109,12 @@ class FilesPage(BasePage):
         return self
 
     def toggle_file_switch(self, item: Locator) -> "FilesPage":
-        """Toggle the file switch."""
+        """Toggle the file enable-switch.
+
+        NOTE: since #6504 the enable-switch only exists on the Profile source
+        (system-prompt files), not on Workspace file rows. Callers must switch
+        to the Profile tab first; ``item`` should be a ``profileRow`` locator.
+        """
         switch = item.locator(self.SWITCH_SELECTOR).first
         if switch.count() > 0:
             switch.click()
@@ -97,7 +122,7 @@ class FilesPage(BasePage):
         return self
 
     def is_file_enabled(self, item: Locator) -> bool:
-        """Return whether the file is enabled."""
+        """Return whether the file is enabled (Profile source switch)."""
         switch = item.locator(self.SWITCH_SELECTOR).first
         if switch.count() > 0:
             return switch.evaluate(
