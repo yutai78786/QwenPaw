@@ -9,6 +9,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -249,6 +252,30 @@ def seed_inbox_trace(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def remove_probe_quietly(path: Path, *, attempts: int = 5) -> None:
+    """Best-effort probe removal for ``finally`` blocks.
+
+    The app subprocess may still hold a handle on a file it just
+    served (download streams, atomic writers, background watchers).
+    POSIX permits unlinking an open file, but Windows raises
+    ``PermissionError`` (WinError 5/32) until the handle closes.
+
+    Retry briefly, then give up silently: probe names are unique per
+    case, so a leftover file cannot affect other tests, and a
+    housekeeping failure must not mask a passing assertion.
+    """
+    for attempt in range(attempts):
+        try:
+            if not path.exists():
+                return
+            path.unlink()
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                return
+            time.sleep(0.2 * (attempt + 1))
 
 
 def clean_inbox(working_dir: Path) -> None:
@@ -723,3 +750,129 @@ def unregister_mock_provider(app_server, provider_id: str):
         )
     except Exception:
         pass
+
+
+# ------------------------------------------------------------------ #
+# CLI subprocess coverage
+# ------------------------------------------------------------------ #
+
+_INTEGRATION_COVERAGE_DIR_NAME = ".integration_coverage"
+_COVERAGE_SUBPROC_BASENAME = "integration_subproc"
+_COVERAGE_RCFILE_NAME = "coverage_subprocess.ini"
+
+
+def coverage_subprocess_env(
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Environment that makes a CLI subprocess trace coverage.
+
+    ``conftest.py`` already injects ``COVERAGE_PROCESS_START`` /
+    ``COVERAGE_FILE`` into the app-server subprocess, and its
+    ``pytest_sessionfinish`` runs ``coverage combine`` over every
+    ``integration_subproc*`` file in ``.integration_coverage/``.
+
+    Reusing that same rcfile and data-file basename means a *separate*
+    ``python -m qwenpaw ...`` subprocess (CLI commands, which the app
+    server never imports) also lands in the combined report — otherwise
+    thousands of ``cli/`` lines stay at 0% no matter how many CLI cases
+    run.
+
+    No-op (returns ``base_env`` unchanged) when subprocess coverage is
+    not requested, so local runs without
+    ``QWENPAW_INTEGRATION_COVERAGE`` behave exactly as before.
+    """
+    env = dict(os.environ if base_env is None else base_env)
+    requested = os.environ.get(
+        "QWENPAW_INTEGRATION_COVERAGE",
+        "",
+    ).strip().lower() in ("1", "true", "yes")
+    if not requested:
+        return env
+
+    root = Path(__file__).resolve().parents[2]
+    directory = root / _INTEGRATION_COVERAGE_DIR_NAME
+    rcfile = directory / _COVERAGE_RCFILE_NAME
+    if not rcfile.exists():
+        # Session start has not written the rcfile (e.g. running a single
+        # module without pytest_sessionstart); tracing would silently
+        # produce nothing, so leave the environment alone.
+        return env
+
+    env["COVERAGE_PROCESS_START"] = str(rcfile)
+    env["COVERAGE_FILE"] = str(directory / _COVERAGE_SUBPROC_BASENAME)
+    return env
+
+
+def run_cli(
+    *args: str,
+    timeout: float = 60.0,
+    home: Path | None = None,
+    cwd: Path | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> "subprocess.CompletedProcess[str]":
+    """Run ``python -m qwenpaw <args>`` with coverage traced.
+
+    Always passes an isolated ``HOME``/``USERPROFILE`` so CLI cases can
+    never read or write the developer's real ``~/.qwenpaw``; callers may
+    override it with ``home=`` to point at a prepared fixture directory.
+    """
+    env = coverage_subprocess_env()
+    if home is not None:
+        env["HOME"] = str(home)
+        env["USERPROFILE"] = str(home)
+    if extra_env:
+        env.update({str(k): str(v) for k, v in extra_env.items()})
+
+    root = Path(__file__).resolve().parents[2]
+    return subprocess.run(
+        [sys.executable, "-m", "qwenpaw", *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+        cwd=str(cwd if cwd is not None else root),
+        env=env,
+    )
+
+
+_CLI_SANDBOX: tuple[Path, Path] | None = None
+
+
+def cli_sandbox() -> tuple[Path, Path]:
+    """Process-wide sandbox ``(home, working_dir)`` for CLI cases.
+
+    Created once per test process (so once per xdist worker) and reused:
+    CLI cases that only read local config are cheap, and paying for a
+    fresh ``init`` on every one of them would dominate their runtime.
+
+    Redirecting ``HOME``/``USERPROFILE`` and ``QWENPAW_WORKING_DIR``
+    here keeps read-only commands such as ``clean --dry-run`` from
+    inspecting the developer's real ``~/.qwenpaw``.
+    """
+    global _CLI_SANDBOX  # noqa: PLW0603 - intentional process cache
+    if _CLI_SANDBOX is None:
+        root = Path(tempfile.mkdtemp(prefix="qwenpaw-cli-sandbox-"))
+        working = root / "working"
+        working.mkdir()
+        _CLI_SANDBOX = (root, working)
+    return _CLI_SANDBOX
+
+
+def cli_sandbox_home() -> Path:
+    """Home directory of :func:`cli_sandbox`."""
+    return cli_sandbox()[0]
+
+
+def cli_sandbox_env() -> dict[str, str]:
+    """Environment variables pinning a CLI run to the sandbox."""
+    home, working = cli_sandbox()
+    return {
+        "QWENPAW_WORKING_DIR": str(working),
+        "QWENPAW_SECRET_DIR": str(home / "secret"),
+        "QWENPAW_AUTH_ENABLED": "false",
+        "QWENPAW_RUNNING_IN_CONTAINER": "true",
+        "PYTHONIOENCODING": "utf-8",
+        "NO_PROXY": "*",
+    }
