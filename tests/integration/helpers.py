@@ -464,6 +464,22 @@ class MockLLMHandler(BaseHTTPRequestHandler):
         count = getattr(self.server, "request_count", 0) + 1
         self.server.request_count = count
 
+        # Expose the wire payload so a case can assert what the agent
+        # actually sent upstream -- e.g. that images were resized before
+        # the request (GH#7212) or that tool schemas were injected
+        # (GH#7210).  Purely additive: nothing else reads these, so
+        # existing cases are unaffected.  ``last_bodies`` keeps every
+        # request of the turn (a tool-call turn posts at least twice) and
+        # is capped so a long loop cannot grow the list without bound.
+        self.server.last_body = body
+        self.server.last_tools = body.get("tools") or []
+        bodies = getattr(self.server, "last_bodies", None)
+        if bodies is None:
+            bodies = []
+            self.server.last_bodies = bodies
+        bodies.append(body)
+        del bodies[: max(0, len(bodies) - 50)]
+
         delay = getattr(self.server, "response_delay", 0)
         if delay:
             time.sleep(delay)
