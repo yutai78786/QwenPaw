@@ -1381,12 +1381,27 @@ class ChatPage(BasePage):
         """Locator for one sidebar date-bucket header.
 
         Args:
-            group: bucket key — pinned / today / week / month / older.
+            group: bucket key — today / week / older.
 
-        Upstream re-architected the sidebar: date buckets now render as
-        non-collapsible ``SessionDateHeader`` rows carrying a
-        ``data-date-group`` attribute, nested inside collapsible user
-        groups.
+        Precondition: the sidebar must be in ``date`` grouping mode.
+        ``data-date-group`` is emitted by ``SessionDateHeader`` alone, and
+        ``SidebarSessionList`` only builds ``dateHeader`` rows inside its
+        ``groupMode === "date"`` branch — ``source`` mode renders
+        ``SessionGroupHeader`` (no such attribute) and ``none`` mode renders
+        no header at all.  All three selector candidates below are rooted at
+        ``[data-date-group]``, so under any other mode this locator matches
+        zero nodes *by construction*.  Since #7972 the default is
+        ``source``, so callers must pin
+        ``localStorage.qwenpaw_session_group_mode = "date"`` via
+        ``add_init_script`` before the app boots.
+
+        Since #7788 the header is itself the collapsible control (it
+        carries ``role="button"``, ``aria-expanded`` and ``onToggle``) and
+        is *not* nested inside a user group; only the today / week / older
+        tiers render (``pinned`` is float-to-top ordering within its tier,
+        and ``month`` has no tier of its own — both keys are kept in
+        ``SIDEBAR_GROUP_TEXTS`` only as i18n text, asserting either as a
+        header can never pass).
         """
         en, zh = self.SIDEBAR_GROUP_TEXTS[group]
         return self.page.locator(

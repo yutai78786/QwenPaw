@@ -79,20 +79,73 @@ class TestSidebarDateGroups:
              ``source`` grouping mode.  Steps 4/5 therefore toggle the
              **date** header, not a user-group header that no longer
              exists in this mode.
+
+        .. versionchanged:: 2026-09-25
+           Adapted to upstream #7972 (``default session list grouping to
+           source``), which changed ``DEFAULT_SESSION_GROUP_MODE`` from
+           ``"date"`` to ``"source"`` so that users' existing chat groups
+           and the source-only "New group" action stay visible after the
+           #7788 redesign.  Date buckets are therefore no longer the
+           default rendering, and the case now pins
+           ``localStorage.qwenpaw_session_group_mode = "date"`` and asserts
+           the pin took before reading any date header.
         """
         test_name = request.node.name
 
         log_test_step("1. Mock the sidebar list with 5 crafted-timestamp sessions")
         sidebar_sessions.register(page)
-        # SidebarSessionList only mounts in the sidebar's *simple* mode
-        # (Sidebar.tsx: isSimpleExpanded branch); the default is "full"
-        # nav mode, so pin simple mode before the app boots.
+        # #7972 flipped the sidebar default grouping mode from "date" to
+        # "source" (console/src/utils/sessionGroupModePreference.ts), and the
+        # date-bucket header asserted below (``data-date-group``, emitted by
+        # ``SessionDateHeader`` alone) is built *only* in ``date`` mode:
+        # ``SidebarSessionList``'s ``sections`` memo produces ``dateHeader``
+        # rows inside its ``groupMode === "date"`` branch, while ``source``
+        # mode renders ``SessionGroupHeader`` (no such attribute) and ``none``
+        # mode renders no header at all.  Every candidate in
+        # ``get_sidebar_group_header`` is rooted at ``[data-date-group]``, so
+        # under the new default this locator matches zero nodes by
+        # construction.  Pin ``date`` explicitly before the app boots — the
+        # same fix upstream applied to its own frontend tests in that PR
+        # ("set the mode explicitly, keeping date-mode coverage intact");
+        # ``e2e/`` was simply outside its blast radius.
         page.add_init_script(
+            "try { localStorage.setItem("
+            "'qwenpaw_session_group_mode', 'date'); }"
+            " catch (e) {}"
+            # Historical pin, retained deliberately.  When this case was
+            # written the session list only mounted in the sidebar's "simple"
+            # mode, and 2.2.0-era builds do read this key
+            # (``localStorage.getItem(...) === "simple" ? "simple" : "full"``).
+            # On current main the key has no reader left — the list now mounts
+            # in ``Sidebar.tsx``'s ``{collapsed ? ... : ...}`` expanded branch,
+            # gated by ``qwenpaw_sidebar_collapsed`` — so the write is inert
+            # rather than load-bearing.  It is kept because removing it is an
+            # unverified behaviour change across builds this case must run
+            # against, and an inert no-op is the cheaper of the two risks.
             "try { localStorage.setItem('qwenpaw_sidebar_mode', 'simple'); }"
             " catch (e) {}"
         )
         chat = ChatPage(page)
         chat.open()
+
+        # Positive evidence the group-mode pin took (read back from the live
+        # page rather than inferred from a later pass).  This proves what is
+        # in storage, not what rendered: ``SidebarSessionList`` seeds its
+        # ``groupMode`` state from this key via a lazy ``useState`` initializer
+        # and the only writer is ``handleGroupModeChange`` (user action), so
+        # nothing overwrites it back to the default between here and the
+        # header assertions.  Logging it turns a post-mortem guess into a
+        # single readable line if those assertions ever fail again.
+        group_mode = page.evaluate(
+            "() => { try { return localStorage.getItem("
+            "'qwenpaw_session_group_mode'); } catch (e) { return 'ERR'; } }"
+        )
+        logger.info("Sidebar session group mode = %r", group_mode)
+        assert group_mode == "date", (
+            "qwenpaw_session_group_mode was not pinned to 'date' (got "
+            f"{group_mode!r}); the date-bucket headers asserted below only "
+            "render in date grouping mode"
+        )
 
         log_test_step("2. Date headers render for the crafted buckets")
         # #7788: only today/week/older render as date buckets; "pinned" is a
