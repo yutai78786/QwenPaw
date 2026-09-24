@@ -18,12 +18,14 @@
  * `checkpointsApi` and `useAppMessage` are mocked: this file asserts what the
  * modal sends and what it tells the user, not the transport.
  *
- * One arm is structurally unreachable and is documented in place instead of
+ * One arm is never hit by this suite and is pinned by observation instead of
  * being forced: `{previewing ? <Spin/> : ...}` lives inside the `preview`
- * branch, while `setPreview(result)` and `setPreviewing(false)` are batched in
- * the same continuation, so `preview` non-null implies `previewing` false. The
- * invariant is asserted positively in
- * "keeps the spinner arm unreachable while a preview is in flight".
+ * branch, while `setPreview(result)` and `setPreviewing(false)` land in the
+ * same async continuation. React 18 batching the two into a single render is
+ * the assumed mechanism here, not an asserted one, so the test below only
+ * claims what it measures: no spinner renders in flight, and none renders once
+ * the host block is up either.
+ * See "renders no spinner in flight nor once the preview resolved".
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
@@ -37,7 +39,7 @@ import { act } from "react";
 // antd is imported by the product file directly, so the real components render.
 // Only `Spin` is imported here, and only as the positive control that proves
 // the `.ant-spin` selector used by the unreachability test really detects a
-// spinner (see "keeps the spinner arm unreachable ...").
+// spinner (see "renders no spinner in flight nor once the preview resolved").
 import { Spin } from "antd";
 import type { CheckpointNode, RestoreResult } from "@/api/types/checkpoints";
 
@@ -512,14 +514,21 @@ describe("preview request", () => {
     expect(button(BTN_PREVIEW).disabled).toBe(false);
   });
 
-  it("keeps the spinner arm unreachable while a preview is in flight", async () => {
+  it("renders no spinner in flight nor once the preview resolved", async () => {
     // `previewing` is only true between the click and the resolution, and the
-    // only spinner that reads it sits inside the `preview` branch. Prove the
-    // invariant instead of forcing the arm: while the call is pending there is
-    // no preview yet, hence no file list and no spinner.
+    // only spinner that reads it sits inside the `preview` branch, gated by
+    // `includeFiles`. Two states are therefore checked, and they need two
+    // different controls:
+    //   - in flight the host block is not mounted at all, so an absent spinner
+    //     there says nothing about the selector. The host absence is asserted
+    //     first, so that the spinner assertion is read as "still on the scope
+    //     step" rather than as a finding.
+    //   - once the preview resolved the host IS mounted, so `.ant-spin` is
+    //     queried inside a scope that actually exists. That is the assertion
+    //     with discriminating power.
     //
     // Positive control first: the `.ant-spin` selector does detect a real antd
-    // Spin, so the absence asserted below is a finding and not a vacuous query.
+    // Spin anywhere in the document.
     const control = render(<Spin size="small" />);
     expect(document.querySelectorAll(".ant-spin")).toHaveLength(1);
     control.unmount();
@@ -536,16 +545,44 @@ describe("preview request", () => {
     fireEvent.click(button(BTN_PREVIEW));
 
     await waitFor(() => expect(cpMocks.previewRestore).toHaveBeenCalled());
-    expect(document.querySelector(".ant-spin")).toBeNull();
+    // In flight: the host block is absent by construction (the preview button
+    // that triggered the call only renders while `preview` is null). Both
+    // queries below are therefore expected to miss.
     expect(document.querySelector(`.${styles.fileSelection}`)).toBeNull();
+    expect(document.querySelector(".ant-spin")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     // The in-flight state is observable on the preview button only.
     expect(button(BTN_PREVIEW).className).toContain("ant-btn-loading");
 
     await act(async () => {
-      release(makeResult({ file_paths: [], deleted_paths: [] }));
+      release(makeResult({ file_paths: ["a.txt"], deleted_paths: [] }));
     });
     await screen.findByRole("alert");
+    // Settled: the host block is mounted and holds one file row, so the
+    // `.ant-spin` query below runs against a scope that exists. This is the
+    // assertion that would fail if the spinner arm ever rendered.
+    const host = document.querySelector(`.${styles.fileSelection}`);
+    expect(host).not.toBeNull();
+    expect(host?.querySelectorAll("label")).toHaveLength(1);
+    expect(host?.querySelectorAll(".ant-spin")).toHaveLength(0);
+    expect(document.querySelectorAll(".ant-spin")).toHaveLength(0);
+
+    // Second positive control, at the scope the assertion above actually uses:
+    // a spinner injected into the host block is found by the host-scoped query.
+    // Without this, "0 spinners inside the host" could still be a vacuous
+    // result (the document-level control above only proves the selector works
+    // somewhere, not inside this scope). The injection is synthetic and torn
+    // down in the same test: the product code is never touched.
+    const probeHost = document.createElement("div");
+    host?.appendChild(probeHost);
+    render(<Spin size="small" />, { container: probeHost });
+    expect(host?.querySelectorAll(".ant-spin")).toHaveLength(1);
+    expect(host?.querySelectorAll("label")).toHaveLength(1);
+    act(() => {
+      probeHost.remove();
+    });
+    expect(host?.querySelectorAll(".ant-spin")).toHaveLength(0);
+    expect(document.querySelectorAll(".ant-spin")).toHaveLength(0);
     // The scope step (and its button) is gone, so check the flag globally: no
     // antd button may still be marked as loading once the call settled.
     expect(document.querySelectorAll(".ant-btn-loading")).toHaveLength(0);
