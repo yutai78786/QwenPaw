@@ -73,14 +73,17 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render } from "@testing-library/react";
-import React from "react";
+import React, { type ComponentProps } from "react";
 import type { ExtendedModelInfo } from "../../../../../api/types";
 
 const h = vi.hoisted(() => ({
   /** Keys whose t() call must answer "" so the literal fallbacks get taken. */
   emptyKeys: new Set<string>(),
   /** One stable placeholder component per missing Spark* icon name. */
-  sparkPlaceholders: new Map<string, () => React.ReactElement>(),
+  sparkPlaceholders: new Map<
+    string,
+    (props: Record<string, unknown>) => React.ReactElement
+  >(),
 }));
 
 vi.mock("react-i18next", () => ({
@@ -97,15 +100,16 @@ vi.mock("react-i18next", () => ({
 vi.mock("@agentscope-ai/icons", async (importOriginal) => {
   const icons = await importOriginal<Record<string, unknown>>();
   const placeholderFor = (name: string) => {
-    let component = h.sparkPlaceholders.get(name);
-    if (!component) {
-      // Props must be forwarded: the real icons accept className/style, and
-      // the output-modality icon is identified by a class of its own.
-      component = (props: Record<string, unknown>) => (
-        <span data-spark-icon={name} {...props} />
-      );
-      h.sparkPlaceholders.set(name, component);
+    const cached = h.sparkPlaceholders.get(name);
+    if (cached) {
+      return cached;
     }
+    // Props must be forwarded: the real icons accept className/style, and
+    // the output-modality icon is identified by a class of its own.
+    const component = (props: Record<string, unknown>) => (
+      <span data-spark-icon={name} {...props} />
+    );
+    h.sparkPlaceholders.set(name, component);
     return component;
   };
   return new Proxy(icons, {
@@ -185,9 +189,12 @@ function makeProps(overrides: Record<string, unknown> = {}) {
 
 type Props = ReturnType<typeof makeProps>;
 
+/** The component contract: spreading a fixture needs this, not `never`. */
+type SectionProps = ComponentProps<typeof OpenRouterFilterSection>;
+
 function renderSection(overrides: Record<string, unknown> = {}) {
   const props = makeProps(overrides) as unknown as Props;
-  const view = render(<OpenRouterFilterSection {...(props as never)} />);
+  const view = render(<OpenRouterFilterSection {...(props as SectionProps)} />);
   return { ...view, props, container: view.container };
 }
 
@@ -353,7 +360,7 @@ describe("OpenRouterFilterSection collapse toggle", () => {
   it("keeps the provider search query across a collapse and expand", () => {
     const props = makeProps({ showFilters: true });
     const { container, rerender } = render(
-      <OpenRouterFilterSection {...(props as never)} />,
+      <OpenRouterFilterSection {...(props as SectionProps)} />,
     );
 
     fireEvent.change(searchInput(container), { target: { value: "anth" } });
@@ -361,14 +368,14 @@ describe("OpenRouterFilterSection collapse toggle", () => {
 
     rerender(
       <OpenRouterFilterSection
-        {...({ ...props, showFilters: false } as never)}
+        {...({ ...props, showFilters: false } as SectionProps)}
       />,
     );
     expect(panel(container)).toBeNull();
 
     rerender(
       <OpenRouterFilterSection
-        {...({ ...props, showFilters: true } as never)}
+        {...({ ...props, showFilters: true } as SectionProps)}
       />,
     );
     // The query is state of this component, not of the panel subtree.

@@ -38,7 +38,6 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import React from "react";
 
 const request = vi.hoisted(() => vi.fn());
 vi.mock("../../../../../api/modules/hubGovernance", () => ({
