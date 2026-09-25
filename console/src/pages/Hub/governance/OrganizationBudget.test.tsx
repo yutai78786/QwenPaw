@@ -67,6 +67,8 @@ function makeUsage(orgLimit: number | null): UsageReport {
       charged: 5,
       actual: 5,
       reserved: 0,
+      conservative: 0,
+      requests: 0,
     },
     members: [],
     models: [],
