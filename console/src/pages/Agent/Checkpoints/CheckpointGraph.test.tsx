@@ -746,7 +746,7 @@ describe("CheckpointGraph — svg lane drawing", () => {
   });
 
   it("colours each segment with the owning session colour from the map", () => {
-    const { container, rows } = renderGraph([
+    const { container } = renderGraph([
       makeNode({
         commit: "c1",
         sha: "s1",
@@ -1017,11 +1017,14 @@ describe("CheckpointGraph — container size observation", () => {
 
   it("picks up a box that only becomes measurable after mount", async () => {
     setSize(0, 0);
-    let trigger: (() => void) | null = null;
+    // The observer callback is assigned asynchronously, so it is kept in an
+    // object slot; a bare `let` stays narrowed to `null` at the call site and
+    // tsc would reject `trigger?.()` as not callable.
+    const triggerRef = { current: null as (() => void) | null };
     vi.stubGlobal(
       "ResizeObserver",
       vi.fn().mockImplementation(function (cb: () => void) {
-        trigger = cb;
+        triggerRef.current = cb;
         return { observe: vi.fn(), unobserve: vi.fn(), disconnect: vi.fn() };
       }),
     );
@@ -1036,7 +1039,7 @@ describe("CheckpointGraph — container size observation", () => {
     const { rerender } = render(<CheckpointGraph {...props} />);
     expect(screen.queryByTestId("virtual-list")).not.toBeInTheDocument();
     setSize(700, 420);
-    trigger?.();
+    triggerRef.current?.();
     await screen.findByTestId("virtual-list");
     expect(listSpy.current.width).toBe(700);
     expect(listSpy.current.height).toBe(420);
