@@ -54,6 +54,13 @@
  *    `number | null` and passes it to the real antd `InputNumber`, which
  *    handles null — so the warning is a stub artefact. The shared stub is
  *    deliberately left untouched here.
+ *
+ *    This file is *not* what introduced that warning. Running the repo's
+ *    pre-existing `src/pages/Settings/Models/components/modals/ModelConfigEditor.test.tsx`
+ *    on its own logs the same warning once (it reaches the same stubbed
+ *    `InputNumber` through `OutputTokenLimitField` in `ModelTokenFields.tsx`),
+ *    and a coverage leg that excludes this file counts it once as well. Two
+ *    independent sources therefore agree that the warning predates this suite.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
