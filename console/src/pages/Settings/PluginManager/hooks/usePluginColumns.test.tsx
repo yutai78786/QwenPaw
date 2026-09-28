@@ -5,8 +5,9 @@ import type { ColumnsType } from "antd/es/table";
 
 import type { PluginInfo, PluginType } from "@/api/modules/plugin";
 
-// The shared icons stub (src/test/icons-mock.ts) does not export SparkWifiLine,
-// which PluginTypeTag renders for the "channel" type. Without a local stub the
+// This test supplies its own icons mock (see vi.mock below), so it does not
+// depend on the shared stub (src/test/icons-mock.ts). PluginTypeTag renders
+// SparkWifiLine for the "channel" type, and without any mock providing it the
 // element type resolves to undefined and React throws while rendering.
 vi.mock("@agentscope-ai/icons", () => ({
   SparkWifiLine: (props: Record<string, unknown>) => (

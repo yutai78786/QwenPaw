@@ -4,9 +4,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PluginType } from "@/api/modules/plugin";
 
-// The shared icons stub (src/test/icons-mock.ts) does not export SparkWifiLine,
-// which the "channel" arm of the type map renders. Without a local stub that
-// arm resolves to an undefined element type and React throws while rendering.
+// This test supplies its own icons mock (see vi.mock below), so it does not
+// depend on the shared stub (src/test/icons-mock.ts). The "channel" arm of the
+// type map renders SparkWifiLine, and without any mock providing it that arm
+// resolves to an undefined element type and React throws while rendering.
 vi.mock("@agentscope-ai/icons", () => ({
   SparkWifiLine: (props: Record<string, unknown>) => (
     <span data-icon="SparkWifiLine" {...props} />
