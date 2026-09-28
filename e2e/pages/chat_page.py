@@ -128,21 +128,98 @@ class ChatPage(BasePage):
     # SessionItem actions now live behind a "more" button (SparkMoreLine)
     # that opens an antd Dropdown menu (Pin / Rename / Archive / Delete).
     SESSION_MORE_BTN = '[class*=moreBtn]'
-    # ``:text-is`` is exact so "Pin" does not also match "Unpin".
+    # --- Session actions menu: two coexisting DOM shapes (#7956) ---
+    #
+    # Up to #7956 the menu was an antd Dropdown, so items carried
+    # ``.qwenpaw-dropdown-menu-item``. #7956 replaced it with a self-drawn
+    # ``SessionActions`` panel (antd Popover + InteractiveCard) that renders
+    # ``<motion.button role="menuitem" data-press><svg/><span>Label</span>``
+    # — no antd Menu, therefore no ``.qwenpaw-dropdown-menu-item`` at all.
+    #
+    # Verified against a production build (``vite build``, ``prefixCls``
+    # "qwenpaw") in a real headless Chromium: the legacy selector returns
+    # count=0 while ``button[role="menuitem"]`` returns the 6 entries
+    # Rename / Pin|Unpin / Move to group / Archive / Copy conversation ID /
+    # Delete. ``button[role="menuitem"]`` is produced by SessionActions.tsx
+    # alone in the whole console source, so it is a high-specificity anchor.
+    #
+    # Both shapes are kept (comma = OR) so the page object works against
+    # older builds — the local instance on port 6266 is still 2.2.0 — and so
+    # an upstream revert cannot blind the suite again.
+    #
+    # 🔴 Both shapes MUST be scoped to the *visible* popup. Neither antd
+    # Dropdown nor Popover unmounts on close: the closed one stays in the DOM
+    # with a ``-hidden`` modifier (``display:none``). Playwright's ``.first``
+    # picks by DOM order, not visibility, so with several rows' menus opened in
+    # a row the unscoped locator returns count=N and ``.first`` resolves to an
+    # *earlier row's* stale menu. Measured on a production build of this change
+    # with three rows' menus opened back to back: unscoped Delete → count=1 /
+    # 2 / 3 after opening the 1st / 2nd / 3rd row, and from the 2nd row on
+    # ``first.is_visible()`` is False with the owner being the FIRST row, not
+    # the one just clicked; scoped → count=1, visible=True, correct owner.
+    # Without the scope every call after the first would fall into the
+    # "menu item not found" branch — i.e. the exact silent-failure mode that
+    # starved the CI shard.
+    #
+    # 🔴 ``:has-text()`` is a *substring* match, so ``:has-text("Pin")`` also
+    # matches "Unpin" (and ``:has-text("置顶")`` also matches "取消置顶").
+    # Measured on an already-pinned row (whose menu therefore offers "Unpin"):
+    # ``button[role="menuitem"]:has-text("Pin")`` returned count=1 with text
+    # **"Unpin"** — i.e. ``pin_session()`` would silently *unpin*. The comment
+    # above the old constants claimed "``:text-is`` is exact" while the code
+    # actually used ``:has-text``.
+    # ``:text-is()`` cannot be applied to the button directly either: it
+    # matches the *smallest* element containing the text, and here that is the
+    # inner ``<span>``, not the button (measured count=0 on both Pin and
+    # Unpin). The working form is therefore ``button:has(span:text-is("..."))``,
+    # which keeps exactness and still resolves to the clickable BUTTON.
+    #
+    # Note the menu holds 6 entries (Rename / Pin|Unpin / Move to group /
+    # Archive / Copy conversation ID / Delete) and "Move to group" swaps the
+    # whole ``role="menu"`` container content for a submenu, so any future
+    # automation of that entry must re-scope after the swap.
+    SESSION_MENU_POPUP_VISIBLE = (
+        '.qwenpaw-popover:not(.qwenpaw-popover-hidden), '
+        '.qwenpaw-dropdown:not(.qwenpaw-dropdown-hidden)'
+    )
     SESSION_MENU_PIN = (
+        '.qwenpaw-popover:not(.qwenpaw-popover-hidden) '
+        'button[role="menuitem"]:has(span:text-is("Pin")), '
+        '.qwenpaw-popover:not(.qwenpaw-popover-hidden) '
+        'button[role="menuitem"]:has(span:text-is("置顶")), '
+        '.qwenpaw-dropdown:not(.qwenpaw-dropdown-hidden) '
         '.qwenpaw-dropdown-menu-item:has-text("Pin"), '
+        '.qwenpaw-dropdown:not(.qwenpaw-dropdown-hidden) '
         '.qwenpaw-dropdown-menu-item:has-text("置顶")'
     )
     SESSION_MENU_UNPIN = (
+        '.qwenpaw-popover:not(.qwenpaw-popover-hidden) '
+        'button[role="menuitem"]:has(span:text-is("Unpin")), '
+        '.qwenpaw-popover:not(.qwenpaw-popover-hidden) '
+        'button[role="menuitem"]:has(span:text-is("取消置顶")), '
+        '.qwenpaw-dropdown:not(.qwenpaw-dropdown-hidden) '
         '.qwenpaw-dropdown-menu-item:has-text("Unpin"), '
+        '.qwenpaw-dropdown:not(.qwenpaw-dropdown-hidden) '
         '.qwenpaw-dropdown-menu-item:has-text("取消置顶")'
     )
     SESSION_MENU_RENAME = (
+        '.qwenpaw-popover:not(.qwenpaw-popover-hidden) '
+        'button[role="menuitem"]:has(span:text-is("Rename")), '
+        '.qwenpaw-popover:not(.qwenpaw-popover-hidden) '
+        'button[role="menuitem"]:has(span:text-is("重命名")), '
+        '.qwenpaw-dropdown:not(.qwenpaw-dropdown-hidden) '
         '.qwenpaw-dropdown-menu-item:has-text("Rename"), '
+        '.qwenpaw-dropdown:not(.qwenpaw-dropdown-hidden) '
         '.qwenpaw-dropdown-menu-item:has-text("重命名")'
     )
     SESSION_MENU_DELETE = (
+        '.qwenpaw-popover:not(.qwenpaw-popover-hidden) '
+        'button[role="menuitem"]:has(span:text-is("Delete")), '
+        '.qwenpaw-popover:not(.qwenpaw-popover-hidden) '
+        'button[role="menuitem"]:has(span:text-is("删除")), '
+        '.qwenpaw-dropdown:not(.qwenpaw-dropdown-hidden) '
         '.qwenpaw-dropdown-menu-item:has-text("Delete"), '
+        '.qwenpaw-dropdown:not(.qwenpaw-dropdown-hidden) '
         '.qwenpaw-dropdown-menu-item:has-text("删除")'
     )
     # Inline rename input rendered when a SessionItem enters edit mode.
@@ -1050,20 +1127,22 @@ class ChatPage(BasePage):
         return self
 
     def _open_session_menu(self, index: int) -> bool:
-        """Hover a session item and open its actions dropdown.
+        """Hover a session item and open its actions menu.
 
-        The dropdown is triggered by the SparkMoreLine "more" button and
-        holds Pin / Rename / Archive / Delete items. Returns True when the
-        menu is visible.
+        The menu is triggered by the SparkMoreLine "more" button and holds
+        Rename / Pin / Move to group / Archive / Copy ID / Delete. Returns
+        True when the menu is visible.
 
-        The ``moreBtn`` is a ``<span>`` that is ``pointer-events:none`` until
-        the row is ``:hover``-ed, and antd opens the menu on a real click. In
-        headless CI the CSS ``:hover`` can be lost between hovering the row and
-        clicking, so a plain/force click may land on the element *behind* the
-        span and never open the menu. We therefore hover the row and the
-        button, try a normal click, and fall back to a DOM
-        ``dispatchEvent('click')`` that bypasses the pointer-events gate
-        (React's delegated onClick still fires). Two attempts total.
+        The ``moreBtn`` is ``pointer-events:none`` (and ``opacity:0``) until
+        the row is ``:hover``-ed — measured on a production build:
+        ``pointerEvents='none'``, ``opacity='0'`` before hovering the row.
+        The host also opens the menu on a real click. In headless CI the CSS
+        ``:hover`` can be lost between hovering the row and clicking, so a
+        plain/force click may land on the element *behind* the button and
+        never open the menu. We therefore hover the row and the button, try a
+        normal click, and fall back to a DOM ``dispatchEvent('click')`` that
+        bypasses the pointer-events gate (React's delegated onClick still
+        fires). Two attempts total.
         """
         sessions = self.get_session_items()
         if not sessions or index >= len(sessions):
@@ -1074,9 +1153,19 @@ class ChatPage(BasePage):
         # nth() right before each interaction attempt instead.
         target = self.page.locator(self.SESSION_ITEM).nth(index)
 
-        # antd keeps closed menus in the DOM with a ``-hidden`` modifier; the
-        # open one is the menu WITHOUT it.
+        # The visibility judge has to recognise BOTH menu shapes, and has to
+        # look only at the *currently open* one. antd keeps closed Dropdown /
+        # Popover containers in the DOM with a ``-hidden`` modifier, so an
+        # unscoped ``[role="menuitem"]`` still matches after the menu was
+        # dismissed (measured: count=6 while ``display:none``). Scoping to the
+        # non-hidden popup is what distinguishes "open" from "leftover".
+        #
+        # #7956 replaced the antd Dropdown with the self-drawn SessionActions
+        # panel (Popover + ``<button role="menuitem" data-press>``); the legacy
+        # ``.qwenpaw-dropdown-menu-item`` branch is kept for older builds.
         open_menu_item = (
+            '.qwenpaw-popover:not(.qwenpaw-popover-hidden) '
+            'button[role="menuitem"], '
             '.qwenpaw-dropdown:not(.qwenpaw-dropdown-hidden) '
             '.qwenpaw-dropdown-menu-item'
         )
@@ -1216,20 +1305,43 @@ class ChatPage(BasePage):
         return self
 
     def delete_session(self, index: int) -> "ChatPage":
-        """Delete a session via more-menu → Delete (confirm modal if shown)."""
+        """Delete a session via more-menu → Delete (confirm modal if shown).
+
+        Public API: always returns ``self`` so call sites can keep chaining.
+        Callers that need to know whether the row actually went away (the
+        cleanup loop does — see ``delete_all_sessions``) should use
+        ``_delete_session_once``, which reports success as a bool.
+        """
+        self._delete_session_once(index)
+        return self
+
+    def _delete_session_once(self, index: int) -> bool:
+        """Delete one session and report whether it really went away.
+
+        Returns True only when the session count actually dropped. Every
+        failure mode returns False *instead of raising*, which is exactly why
+        ``delete_all_sessions`` cannot rely on exceptions to stop looping:
+        a silently-failed delete looks identical to a successful one from the
+        outside. That used to make the cleanup loop burn all of its
+        ``max_attempts`` (~15s each) when the actions menu stopped opening,
+        which is how one stuck teardown ate a whole 60-minute CI shard
+        (upstream #7956 swapped the session actions menu from an antd
+        Dropdown to a self-drawn ``SessionActions`` panel, so the old
+        ``.qwenpaw-dropdown-menu-item`` anchor matched nothing).
+        """
         logger.info(f"Deleting session at index {index}")
         sessions_before = self.get_session_count()
 
         if not self._open_session_menu(index):
             self.step_shot(f"delete_session_{index}_menu_failed")
-            return self
+            return False
 
         del_item = self.page.locator(self.SESSION_MENU_DELETE).first
         if del_item.count() == 0 or not del_item.is_visible():
             logger.warning("Delete menu item not found")
             self.page.keyboard.press("Escape")
             self.step_shot(f"delete_session_{index}_item_missing")
-            return self
+            return False
         del_item.click()
         self.wait(800)
 
@@ -1247,12 +1359,24 @@ class ChatPage(BasePage):
             pass
 
         self.wait(800)
+        sessions_after = self.get_session_count()
+        # A slow delete would otherwise look like a failed one to the caller,
+        # so give the list a bounded grace period before judging. Keep it
+        # short: this runs inside the cleanup loop.
+        for _ in range(3):
+            if sessions_after < sessions_before:
+                break
+            self.wait(500)
+            sessions_after = self.get_session_count()
+        ok = sessions_after < sessions_before
         logger.info(
             f"Session deleted (before: {sessions_before}, "
-            f"after: {self.get_session_count()})"
+            f"after: {sessions_after}, ok: {ok})"
         )
-        self.step_shot(f"delete_session_{index}_done")
-        return self
+        self.step_shot(
+            f"delete_session_{index}_{'done' if ok else 'count_unchanged'}"
+        )
+        return ok
 
     def verify_pinned_session(self) -> bool:
         """Verify the top session is pinned.
@@ -1656,6 +1780,17 @@ class ChatPage(BasePage):
             return self
 
         deleted_count = 0
+        # Stop-loss: a failed delete does NOT raise (see _delete_session_once),
+        # so the old loop could only exit via an exception or an empty list.
+        # When the actions menu stops opening — e.g. after an upstream UI
+        # rewrite invalidates our anchor — neither happens, and the loop
+        # burns all max_attempts at ~15s each (50 × 15s ≈ 12.5min per
+        # teardown). Upstream #7956 did exactly that and one stuck teardown
+        # swallowed a whole 60-minute CI shard, leaving 199/222 cases with no
+        # result at all. So: bail out after a few consecutive no-progress
+        # attempts instead of trusting max_attempts as the only bound.
+        max_consecutive_failures = 3
+        consecutive_failures = 0
         for _ in range(max_attempts):
             try:
                 session_count = self.get_session_count()
@@ -1666,10 +1801,27 @@ class ChatPage(BasePage):
                 break
 
             try:
-                self.delete_session(0)
-                deleted_count += 1
+                if self._delete_session_once(0):
+                    deleted_count += 1
+                    consecutive_failures = 0
+                    continue
             except Exception as error:
                 logger.warning(f"Failed to delete session: {error}")
+                break
+
+            consecutive_failures += 1
+            logger.warning(
+                f"[cleanup] delete attempt made no progress "
+                f"({consecutive_failures}/{max_consecutive_failures}), "
+                f"{session_count} session(s) still listed"
+            )
+            if consecutive_failures >= max_consecutive_failures:
+                logger.warning(
+                    f"[cleanup] aborting after {consecutive_failures} "
+                    f"consecutive failed deletes; {session_count} session(s) "
+                    f"left behind (cleanup is best-effort, the run must not "
+                    f"be starved by it)"
+                )
                 break
 
         logger.info(f"Cleanup complete: deleted {deleted_count} sessions")
