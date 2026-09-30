@@ -106,7 +106,7 @@ describe("generateMockHistory", () => {
     const items = generateMockHistory("\u65e9\u62a5 \ud83d\udcf0");
 
     expect(items[0].id).toBe("\u65e9\u62a5 \ud83d\udcf0-0");
-    expect(items[0].title).toBe("\u65e5\u62a5 \ud83d\udcf0 \u00b7 #1".replace("\u65e5", "\u65e9"));
+    expect(items[0].title).toBe("\u65e9\u62a5 \ud83d\udcf0 \u00b7 #1");
     expect(items[0].id).toContain("\ud83d\udcf0");
   });
 

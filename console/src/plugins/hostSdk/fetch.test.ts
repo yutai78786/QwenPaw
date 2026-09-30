@@ -122,7 +122,11 @@ describe("hostFetch", () => {
   it("passes the other init fields through untouched", async () => {
     const fake = stubFetch();
 
-    await hostFetch("/upload", { method: "PUT", body: "payload", mode: "cors" });
+    await hostFetch("/upload", {
+      method: "PUT",
+      body: "payload",
+      mode: "cors",
+    });
 
     expect(fake.mock.calls[0][1]).toEqual(
       expect.objectContaining({
@@ -144,13 +148,15 @@ describe("hostFetch", () => {
 
   it("returns the very response fetch produced, unwrapped", async () => {
     const fake = stubFetch();
-    const body = { ok: true, status: 200, payload: "echo" };
+    const body = new Response("echo", { status: 200 });
     fake.mockResolvedValue(body);
 
     const res = await hostFetch("/anything");
 
+    // Identity, not a copy: callers chain .json() / .body off the real Response.
     expect(res).toBe(body);
-    expect(res.payload).toBe("echo");
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("echo");
   });
 
   it("propagates a network rejection instead of swallowing it", async () => {

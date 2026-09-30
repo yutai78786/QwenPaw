@@ -50,7 +50,9 @@ describe("osWallpaperStore", () => {
   });
 
   it("persists under the stable storage key", () => {
-    useOsWallpaper.getState().setWallpaper(WALLPAPERS[WALLPAPERS.length - 1].id);
+    useOsWallpaper
+      .getState()
+      .setWallpaper(WALLPAPERS[WALLPAPERS.length - 1].id);
 
     const raw = localStorage.getItem(PERSIST_KEY);
 
