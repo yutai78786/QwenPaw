@@ -468,10 +468,15 @@ describe("WhisperSpeechButton — transcription result handling", () => {
     await emitStop();
     expect(onTranscription).toHaveBeenCalledWith("transcribed");
     expect(h.transcribe).toHaveBeenCalledTimes(1);
-    // Pinned current behaviour: onstop runs the whole pipeline again, because
-    // neither chunksRef nor the transcription call is guarded by a "already
-    // handled" flag, and the timer ref is already null on this second pass
-    // (so the clearTimeout arm is skipped rather than run twice).
+    // Pins the current behaviour of an ABNORMAL call sequence and does not
+    // endorse that behaviour as intended design: product code calls
+    // recorder.stop() from exactly one place and clears the recording flag
+    // right after it, so a second onstop can only be produced by dispatching
+    // the event at the recorder directly, as this test does. Under that
+    // sequence onstop runs the whole pipeline again, because neither chunksRef
+    // nor the transcription call carries an "already handled" flag, and the
+    // timer ref is already null on the second pass, so the clearTimeout arm is
+    // skipped rather than run twice.
     await emitStop();
     expect(h.transcribe).toHaveBeenCalledTimes(2);
     expect(onTranscription).toHaveBeenCalledTimes(2);
@@ -691,11 +696,16 @@ describe("WhisperSpeechButton — loading state, ref surface and the five minute
   });
 
   it("starts a second recorder when toggled twice before the microphone resolves", async () => {
-    // Pinned current behaviour, not an endorsement: the re-entrancy guard in
-    // startRecording only reads internalRecordingRef, which is assigned after
-    // the awaited getUserMedia. Two clicks inside that window therefore both
-    // pass the guard. Asserting it means a future guard added before the await
-    // turns this test red on purpose instead of silently changing behaviour.
+    // Suspected product defect, classification and routing still in progress.
+    // This test pins today's behaviour so that a future fix turns it red
+    // deliberately instead of the defect vanishing unnoticed.
+    // Why it reads as a defect and not as an endorsed design: the re-entrancy
+    // guard in startRecording only reads internalRecordingRef, which is
+    // assigned after the awaited getUserMedia, while the button's disabled
+    // flag only reads `disabled` and `loading` (loading is set inside the
+    // onstop callback). Both are false for the whole await window, so one
+    // ordinary user action -- clicking again because nothing seemed to happen
+    // -- passes the guard twice.
     // Both calls must be released: a single `release` closure would only hold
     // the last resolver and the first promise would stay pending forever.
     const releases: Array<(s: unknown) => void> = [];
@@ -723,8 +733,10 @@ describe("WhisperSpeechButton — loading state, ref surface and the five minute
     expect(h.instances[0].started).toBe(1);
     expect(h.instances[1].started).toBe(1);
     // Stopping only reaches the recorder held in the ref, i.e. the second one;
-    // the first stays started and never fires onstop. Pinned as current
-    // behaviour: a leaked recorder keeps the microphone track open.
+    // the first stays started and never fires onstop, so its microphone track
+    // stays open and the second recorder overwrites the auto-stop timer. Same
+    // suspected defect as above, pinned here so a fix lands as a deliberate
+    // red test.
     await act(async () => {
       fireEvent.click(getByTestId("speech-button"));
     });
