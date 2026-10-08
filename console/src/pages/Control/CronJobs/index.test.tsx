@@ -4,6 +4,10 @@
  * (bug_insights retro P1 SC-CRN-002 heartbeat/misfire).
  * Covers list/calendar/mobile views, schedule filtering, one-time job
  * calendar expansion (timezone repeat logic) and execution history.
+ *
+ * The whole suite runs against one frozen system time (see FROZEN_NOW):
+ * the page derives its calendar window from the current day, so an unfrozen
+ * clock makes the executed branch set depend on the run date.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { screen, fireEvent, waitFor, act } from "@testing-library/react";
@@ -130,6 +134,17 @@ import CronJobsPage from "./index";
 
 // ---- Fixtures --------------------------------------------------------------
 
+// The page anchors its calendar window to the real "today": index.tsx:92
+// useState(dayjs()) and index.tsx:824 day.isSame(dayjs().tz(userTimezone), "day").
+// Reading the wall clock means "which day the suite runs on" decides which
+// branches execute, so coverage moved between batches with no product change.
+// One frozen instant is therefore shared by the whole file: fixtures below are
+// derived from it explicitly, and beforeEach installs it as the system time so
+// the page and the in-test dayjs() calls all read the same clock. The
+// primitive is the one this repository already uses (vi.useFakeTimers /
+// vi.setSystemTime, present in 42 other suites here).
+const FROZEN_NOW = new Date("2026-03-04T05:06:07.000Z");
+
 const recurringJob = {
   id: "job-1",
   name: "Daily Report",
@@ -145,7 +160,7 @@ const oneTimeJob = {
   enabled: true,
   schedule: {
     type: "once",
-    run_at: dayjs().add(1, "day").format("YYYY-MM-DDTHH:mm:ss"),
+    run_at: dayjs(FROZEN_NOW).add(1, "day").format("YYYY-MM-DDTHH:mm:ss"),
     timezone: "UTC",
   },
   task_type: "text",
@@ -158,7 +173,7 @@ const repeatingJob = {
   enabled: false,
   schedule: {
     type: "once",
-    run_at: dayjs().subtract(6, "day").format("YYYY-MM-DDTHH:mm:ss"),
+    run_at: dayjs(FROZEN_NOW).subtract(6, "day").format("YYYY-MM-DDTHH:mm:ss"),
     timezone: "UTC",
     repeat_every_days: 3,
     repeat_end_type: "count",
@@ -182,6 +197,12 @@ function mockHookReturn(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  // Freeze first: every render in this suite must see the same "today".
+  // Only `Date` is faked. Faking the timer functions as well would stall the
+  // polling that @testing-library waitFor relies on, so the 30+ async
+  // assertions in this file would time out instead of checking the UI.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(FROZEN_NOW);
   mockApi.getUserTimezone.mockResolvedValue({ timezone: "UTC" });
   mockApi.listCronDispatchTargets.mockResolvedValue({
     items: [],
@@ -219,6 +240,7 @@ function setMatchMedia(matches: boolean) {
 afterEach(() => {
   setMatchMedia(false);
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 // ---- Tests -----------------------------------------------------------------

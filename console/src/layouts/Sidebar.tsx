@@ -88,7 +88,8 @@ export default function Sidebar({
 }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n.resolvedLanguage ?? i18n.language;
   const { message } = useAppMessage();
   const { isDark } = useTheme();
   const [authEnabled, setAuthEnabled] = useState(false);
@@ -185,7 +186,7 @@ export default function Sidebar({
       ...new Map(entries.map((entry) => [entry.key, entry])).values(),
     ];
     return orderSidebarEntries(uniqueEntries, focusItemIds);
-  }, [agentMenu, focusItemIds, routes, selectedSettingsMenu]);
+  }, [agentMenu, focusItemIds, routes, selectedSettingsMenu, language]);
   const inboxEntry = selectedFlatNav.find(
     (entry) => entry.key === "core.inbox",
   );
@@ -396,6 +397,7 @@ export default function Sidebar({
     routes,
     hasInboxUnread,
     inboxDotColor,
+    language,
   ]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
@@ -412,9 +414,8 @@ export default function Sidebar({
 
   /**
    * New chat: if we're already on the chat page, dispatch the event so
-   * ChatSessionInitializer (which is mounted) creates the session.
-   * If we're on another page, navigate to /chat without a session id —
-   * the chat page will auto-create a new session on mount.
+   * ChatSessionInitializer opens a blank composer. From another page,
+   * navigate to /chat without a session id. The first send creates the session.
    */
   const handleNewChat = useCallback(() => {
     const onChatPage = location.pathname.startsWith("/chat");

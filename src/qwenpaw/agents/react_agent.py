@@ -610,10 +610,20 @@ class QwenPawAgent(CodingModeMixin, Agent):
 
     @staticmethod
     def _is_audio_fallback_error(exc: Exception) -> bool:
-        """Return whether DashScope rejected the current audio payload."""
+        """Return whether a provider rejected the current audio payload."""
         error_str = " ".join(str(exc).lower().split())
         status = extract_status_code(exc)
         has_bad_request_status = status == 400 or "<400>" in error_str
+        rejects_unknown_audio_part = "input_audio" in error_str and any(
+            marker in error_str
+            for marker in (
+                "unknown variant",
+                "unknown field",
+                "unknown part",
+                "unexpected variant",
+                "unexpected field",
+            )
+        )
         invalid_modal = all(
             marker in error_str
             for marker in (
@@ -624,7 +634,7 @@ class QwenPawAgent(CodingModeMixin, Agent):
                 "wrong position",
             )
         )
-        return (
+        return rejects_unknown_audio_part or (
             has_bad_request_status
             and "internalerror.algo.invalidparameter" in error_str
             and invalid_modal
@@ -883,13 +893,9 @@ class QwenPawAgent(CodingModeMixin, Agent):
             )
             return
 
-        # ── Proactive media stripping ──
-        from .model_factory import _supports_multimodal_for_current_model
-
-        should_strip_media = (
-            not _supports_multimodal_for_current_model()
-            or self._model_rejects_media()
-        )
+        # ModelInfo controls per-model request normalization. Only learned
+        # rejections belong here; a global lookup can misclassify fallbacks.
+        should_strip_media = self._model_rejects_media()
         should_strip_audio = (
             not should_strip_media and self._model_rejects_audio()
         )
