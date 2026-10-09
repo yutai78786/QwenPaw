@@ -342,9 +342,23 @@ class TestFileListEditSave:
     """
 
     @pytest.mark.test_id("FILE-001")
-    def test_file_list_view_edit_save(self, page: Page, request: pytest.FixtureRequest):
+    def test_file_list_view_edit_save(
+        self, page: Page, api_context, request: pytest.FixtureRequest,
+    ):
         """Verify file list display and opening the editor."""
         test_name = request.node.name
+
+        # Step 0: unbind any project directory left by an earlier case.
+        #
+        # test_coding.py binds a project directory via
+        # PUT /api/workspace/project-directory and the Files page then shows
+        # *that* tree instead of the workspace tree the seed fixture writes
+        # into. Locally that surfaces as "only hello.txt, no .md"; on CI the
+        # project tree is empty so no treeRow ever renders and the wait times
+        # out. Same root cause, two symptoms -- reset first, like every other
+        # case in this file that reads the workspace tree.
+        log_test_step("0. Reset any project binding so the workspace tree shows")
+        reset_project_binding(api_context)
 
         # Step 1: Visit the workspace page
         log_test_step("1. Visit the workspace page")
@@ -491,6 +505,15 @@ class TestFileToggleReorderMemory:
 
         original_list = None
         try:
+            # Step 0: unbind any project directory left by an earlier case
+            # (see FILE-001 for the full mechanism). This case reads the
+            # Profile source, but it still has to get through
+            # navigate_to_workspace() first, which waits for a workspace
+            # treeRow -- on CI the bound project tree is empty, so that wait
+            # times out before the Profile tab is ever reached.
+            log_test_step("0. Reset any project binding so the workspace tree shows")
+            reset_project_binding(api_context)
+
             # Step 1: Visit the files page and switch to the Profile source
             log_test_step("1. Visit the files page, switch to the Profile source")
             navigate_to_workspace(page)
@@ -723,6 +746,14 @@ class TestFileContentEditAndSave:
             return last
 
         try:
+            # Step 0: unbind any project directory left by an earlier case
+            # (see FILE-001 for the full mechanism). Without it the workspace
+            # tree is replaced by the bound project's tree: locally that
+            # yields a hello.txt with no .md to open, and on CI an empty tree
+            # where no treeRow ever renders.
+            log_test_step("0. Reset any project binding so the workspace tree shows")
+            reset_project_binding(api_context)
+
             # Step 1: Visit the workspace page
             log_test_step("1. Visit the workspace page")
             navigate_to_workspace(page)
