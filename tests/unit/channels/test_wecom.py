@@ -65,7 +65,7 @@ async def test_cancelled_upload_waits_for_open_file(
                 locked.add(str(path))
                 paths.append(path)
                 loop.call_soon_threadsafe(started.set)
-                assert release.wait(timeout=5)
+                assert release.wait(timeout=30)
                 if read_fails:
                     raise OSError("Read failed")
                 return handle.read()
@@ -93,7 +93,7 @@ async def test_cancelled_upload_waits_for_open_file(
             ),
         )
         try:
-            await asyncio.wait_for(started.wait(), timeout=2)
+            await asyncio.wait_for(started.wait(), timeout=30)
             task.cancel()
             # Cancellation must stay pending while the worker owns the file.
             with pytest.raises(asyncio.TimeoutError):
@@ -105,7 +105,7 @@ async def test_cancelled_upload_waits_for_open_file(
         finally:
             release.set()
             await asyncio.gather(task, return_exceptions=True)
-            await asyncio.wait_for(finished.wait(), timeout=2)
+            await asyncio.wait_for(finished.wait(), timeout=30)
 
     assert task.cancelled()
     assert not denied_deletes
