@@ -5,6 +5,11 @@ name: Beunit macOS Sidecar Diagnostic
 # Manual dispatch only; never a gate. Writes nothing outside the runner.
 
 on:
+  # Push-triggered on purpose: GitHub only registers workflows that exist on
+  # the default branch, so a brand-new diagnostic workflow on a topic branch
+  # cannot be reached via workflow_dispatch.
+  push:
+    branches: ["beunit/diag-sidecar-macos-20261021"]
   workflow_dispatch:
     inputs:
       legs:
@@ -22,6 +27,11 @@ on:
         required: false
         default: '120'
         type: string
+
+env:
+  DIAG_LEGS: 'baseline,wide,guard'
+  DIAG_WIDE: '90'
+  DIAG_GUARD_DELAY: '120'
 
 jobs:
   diag:
@@ -60,10 +70,14 @@ jobs:
           QWENPAW_SECRET_DIR: ${{ runner.temp }}/mz-isolated-secret
         run: |
           mkdir -p "$MZ_OUT" "$QWENPAW_WORKING_DIR" "$QWENPAW_SECRET_DIR"
+          LEGS='${{ inputs.legs }}';        LEGS=${LEGS:-$DIAG_LEGS}
+          WIDE='${{ inputs.wide }}';        WIDE=${WIDE:-$DIAG_WIDE}
+          GDELAY='${{ inputs.guard_delay }}'; GDELAY=${GDELAY:-$DIAG_GUARD_DELAY}
+          echo "LEGS=$LEGS WIDE=$WIDE GDELAY=$GDELAY"
           python .github/beunit-diag/diag_sidecar.py \
-            --legs '${{ inputs.legs }}' \
-            --wide '${{ inputs.wide }}' \
-            --guard-delay '${{ inputs.guard_delay }}' \
+            --legs "$LEGS" \
+            --wide "$WIDE" \
+            --guard-delay "$GDELAY" \
             2>&1 | tee "$RUNNER_TEMP/diag.log"
 
       - name: Run the real failing test twice (timing)
