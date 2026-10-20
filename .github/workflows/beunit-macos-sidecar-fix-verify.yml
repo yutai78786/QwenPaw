@@ -1,0 +1,57 @@
+name: Beunit macOS Sidecar Fix Verify
+
+# Verifies the raw-socket rewrite of the managed-service sidecar probe on a
+# real macos-latest runner, because that is the only platform where the
+# original probe ever exceeded its startup window. Manual dispatch plus push
+# on the fix branch; never a gate. Writes nothing outside the runner.
+
+on:
+  push:
+    branches: ["beunit/fix-sidecar-macos-getfqdn"]
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: macOS verify - pawapp unit on the fix branch
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install runtime test dependencies
+        run: python -m pip install -e ".[test]"
+
+      - name: Run the two previously failing tests five times
+        env:
+          QWENPAW_WORKING_DIR: ${{ runner.temp }}/mz-iso-working
+          QWENPAW_SECRET_DIR: ${{ runner.temp }}/mz-iso-secret
+        run: |
+          mkdir -p "$QWENPAW_WORKING_DIR" "$QWENPAW_SECRET_DIR"
+          FAILS=0
+          for R in 1 2 3 4 5; do
+            echo "===== round $R ====="
+            python -m pytest \
+              tests/unit/pawapp/test_qwenpaw_data_service_lifecycle.py \
+              -v --durations=6 --no-header
+            RC=$?
+            echo "ROUND_${R}_RC=${RC}"
+            if [ "$RC" -ne 0 ]; then FAILS=$((FAILS+1)); fi
+          done
+          echo "TOTAL_FAILED_ROUNDS=${FAILS}"
+          if [ "$FAILS" -ne 0 ]; then exit 1; fi
+
+      - name: Run the whole pawapp directory for regressions
+        env:
+          QWENPAW_WORKING_DIR: ${{ runner.temp }}/mz-iso-working2
+          QWENPAW_SECRET_DIR: ${{ runner.temp }}/mz-iso-secret2
+        run: |
+          mkdir -p "$QWENPAW_WORKING_DIR" "$QWENPAW_SECRET_DIR"
+          python -m pytest tests/unit/pawapp/ -v --no-header \
+            | tail -40
+          echo "---- skip census (must stay at the nightly macOS figure) ----"
+          python -m pytest tests/unit/pawapp/ -q --no-header -rs 2>&1 | tail -15
