@@ -1,0 +1,90 @@
+name: Beunit macOS Sidecar Diagnostic
+
+# Diagnostic-only workflow owned by beunit for triaging the nightly macOS
+# failure of tests/unit/pawapp/test_qwenpaw_data_service_lifecycle.py.
+# Manual dispatch only; never a gate. Writes nothing outside the runner.
+
+on:
+  workflow_dispatch:
+    inputs:
+      legs:
+        description: 'comma separated legs: baseline,wide,guard'
+        required: false
+        default: 'baseline,wide,guard'
+        type: string
+      wide:
+        description: 'widened startup_timeout seconds'
+        required: false
+        default: '90'
+        type: string
+      guard_delay:
+        description: 'artificial child delay for the guard leg'
+        required: false
+        default: '120'
+        type: string
+
+jobs:
+  diag:
+    name: macOS sidecar startup timing probe
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install runtime test dependencies
+        run: python -m pip install -e ".[test]"
+
+      - name: Runner facts
+        run: |
+          sw_vers || true
+          uname -a
+          sysctl -n machdep.cpu.brand_string || true
+          echo "--- /etc/hosts ---"
+          cat /etc/hosts
+          echo "--- hostname ---"
+          hostname
+          echo "--- proxy env ---"
+          env | grep -i proxy || echo "(no proxy env vars)"
+          echo "--- scutil --proxy ---"
+          scutil --proxy || true
+
+      - name: Run segment timing probe
+        env:
+          MZ_REPO: ${{ github.workspace }}
+          MZ_OUT: ${{ runner.temp }}/mz-sidecar-out
+          QWENPAW_WORKING_DIR: ${{ runner.temp }}/mz-isolated-working
+          QWENPAW_SECRET_DIR: ${{ runner.temp }}/mz-isolated-secret
+        run: |
+          mkdir -p "$MZ_OUT" "$QWENPAW_WORKING_DIR" "$QWENPAW_SECRET_DIR"
+          python .github/beunit-diag/diag_sidecar.py \
+            --legs '${{ inputs.legs }}' \
+            --wide '${{ inputs.wide }}' \
+            --guard-delay '${{ inputs.guard_delay }}' \
+            2>&1 | tee "$RUNNER_TEMP/diag.log"
+
+      - name: Run the real failing test twice (timing)
+        env:
+          QWENPAW_WORKING_DIR: ${{ runner.temp }}/mz-isolated-working2
+          QWENPAW_SECRET_DIR: ${{ runner.temp }}/mz-isolated-secret2
+        run: |
+          mkdir -p "$QWENPAW_WORKING_DIR" "$QWENPAW_SECRET_DIR"
+          for R in 1 2; do
+            echo "===== round $R ====="
+            python -m pytest \
+              tests/unit/pawapp/test_qwenpaw_data_service_lifecycle.py \
+              -v --durations=10 --no-header 2>&1 | tail -30
+          done
+
+      - name: Upload diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beunit-macos-sidecar-diag
+          path: |
+            ${{ runner.temp }}/diag.log
+          retention-days: 14
+          if-no-files-found: warn
