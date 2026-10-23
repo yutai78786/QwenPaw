@@ -867,9 +867,25 @@ class TestChatIMEInput:
 
         log_test_result(test_name, True, 0)
 
+
 # ============================================================================
 # APPROVAL-001/002/003: Session-level tool approval toggle (upstream #5685)
 # ============================================================================
+
+# Upstream #8283 added a fifth tool-execution level, ``JEV`` ("Decision Model
+# Mode"), between SMART and AUTO in ``console/src/utils/approval.ts``. It is a
+# *conditional* level: ``ApprovalLevelToggle`` renders it for every session but
+# marks it unavailable unless the session decision model is on, and its
+# ``handleSelect`` returns before touching state/localStorage when it is not.
+#
+# Those two labels are kept here (module level) on purpose. ``APPROVAL_LEVELS``
+# in ``pages/chat_page.py`` is the list of levels a plain click can actually
+# select, and APPROVAL-001 iterates it to check the Tag text; adding JEV there
+# would make that loop fail on every run.
+EXPECTED_APPROVAL_LEVEL_COUNT = 5
+JEV_EN_LABEL = "Decision Model Mode"
+JEV_ZH_LABEL = "决策模型模式"
+
 
 @pytest.mark.integration
 @pytest.mark.chat
@@ -878,8 +894,10 @@ class TestToolApproval:
     """Session-level tool approval toggle in the chat composer.
 
     Covers the ApprovalLevelToggle shipped in upstream #5685:
-    - APPROVAL-001: the toggle renders, offers exactly 4 levels, and the Tag
-      text follows the selection.
+    - APPROVAL-001: the toggle renders, offers exactly 5 levels, the Tag text
+      follows the 4 selectable ones, and the 5th (JEV / "Decision Model Mode",
+      added by #8283) stays rendered-but-unselectable while the session
+      decision model is off.
     - APPROVAL-002: the chosen level is persisted in localStorage and survives
       a page reload.
     - APPROVAL-003: deleting a session clears its ``approval_level-<id>`` key.
@@ -893,7 +911,7 @@ class TestToolApproval:
     def test_approval_toggle_renders_and_switches(
         self, clean_chat_page: ChatPage, request: pytest.FixtureRequest
     ):
-        """Toggle renders, exposes 4 levels, and the Tag follows the choice."""
+        """Toggle renders, exposes 5 levels, and the Tag follows the choice."""
         test_name = request.node.name
 
         log_test_step("1. Open the Chat page")
@@ -903,19 +921,97 @@ class TestToolApproval:
         toggle = chat.get_approval_toggle()
         expect(toggle).to_be_visible(timeout=10000)
 
-        log_test_step("3. Open the menu and assert exactly 4 levels")
+        log_test_step("3. Open the menu and assert exactly 5 levels")
         chat.open_approval_menu()
         items = chat.get_approval_menu_items()
-        assert len(items) == 4, f"expected 4 approval levels, got {len(items)}"
+        assert len(items) == EXPECTED_APPROVAL_LEVEL_COUNT, (
+            "expected "
+            f"{EXPECTED_APPROVAL_LEVEL_COUNT} approval levels, "
+            f"got {len(items)}"
+        )
         chat.page.keyboard.press("Escape")
         chat.wait(300)
 
+        # Only the levels a plain click can actually select. JEV is gated on
+        # the session decision model (see EXPECTED_APPROVAL_LEVEL_COUNT above),
+        # so it is asserted separately in step 5 rather than driven here.
         log_test_step("4. Select each level and verify the Tag text follows")
         for level, (en_label, _zh) in ChatPage.APPROVAL_LEVELS.items():
             chat.select_approval_level(level)
             expect(chat.get_approval_toggle()).to_contain_text(en_label)
 
+        log_test_step(
+            "5. Assert JEV stays rendered but unselectable while the session "
+            "decision model is off"
+        )
+        self._assert_jev_gated_without_decision_model(chat)
+
         log_test_result(test_name, True, 0)
+
+    def _assert_jev_gated_without_decision_model(self, chat: ChatPage) -> None:
+        """JEV is visible in the menu but cannot be picked in this session.
+
+        Upstream #8283 made JEV a *conditional* level. ``ApprovalLevelToggle``
+        builds its menu from the full ``LEVELS`` array, so the item is always
+        rendered; it only marks it unavailable (``aria-disabled`` + dimmed) and
+        returns from ``handleSelect`` before any state/localStorage write
+        unless ``decisionModelEnabled === true``. That flag comes from
+        ``useAdvisorDecisionAvailability``, whose ``active`` gate requires an
+        Advisor conversation -- a plain chat page never turns it on, so JEV is
+        gated here.
+
+        Asserting the gate is what actually covers the new level: a bare
+        "5 items render" check would also pass if JEV became selectable.
+
+        Two traps this deliberately avoids:
+          * JEV still renders when gated -- ``toBeNull()`` / ``count == 4``
+            assertions would be false failures.
+          * ``aria-disabled`` sits on an inner ``div``, never on the menu item
+            ``li``, so ``item.get_attribute("aria-disabled")`` returns None.
+            It has to be read from a descendant (verified mechanically against
+            a DOM fixture plus a positive control).
+        """
+        # Start from a known-closed menu: a swallowed JEV click never runs the
+        # component's setOpen(false), so whatever closed the menu in step 4 is
+        # not guaranteed to keep closing it. Escape is a no-op when nothing is
+        # open, and clicking the toggle while the menu is already open would
+        # close it and make open_approval_menu() wait for a menu that is gone.
+        chat.page.keyboard.press("Escape")
+        chat.wait(300)
+        chat.open_approval_menu()
+
+        # Bilingual match, same shape as ChatPage.select_approval_level.
+        jev_item = chat.page.locator(
+            f'{chat.APPROVAL_MENU_ITEM}:has-text("{JEV_EN_LABEL}"), '
+            f'{chat.APPROVAL_MENU_ITEM}:has-text("{JEV_ZH_LABEL}")'
+        ).first
+        expect(jev_item).to_be_visible(timeout=5000)
+
+        gated = jev_item.locator('[aria-disabled="true"]')
+        assert gated.count() == 1, (
+            "JEV must stay rendered but gated while the session decision "
+            f"model is off; found {gated.count()} aria-disabled nodes inside "
+            "the item"
+        )
+
+        # The click goes through (the li itself is not disabled) and the
+        # component swallows it: the Tag must keep the level chosen in step 4.
+        tag_before = chat.get_approval_toggle().text_content()
+        jev_item.click()
+        chat.wait(500)
+
+        tag_after = chat.get_approval_toggle().text_content()
+        assert tag_before == tag_after, (
+            "JEV was selectable without a decision model: Tag changed from "
+            f"{tag_before!r} to {tag_after!r}"
+        )
+        entries = chat.get_approval_storage_entries()
+        assert "JEV" not in entries.values(), (
+            f"JEV was persisted without a decision model: {entries}"
+        )
+
+        chat.page.keyboard.press("Escape")
+        chat.wait(300)
 
     @pytest.mark.p0
     @pytest.mark.test_id("APPROVAL-002")
