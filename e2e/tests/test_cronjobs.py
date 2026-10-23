@@ -14,6 +14,7 @@ Run with: pytest tests/test_cronjobs_p0.py -v
 from __future__ import annotations
 
 import logging
+import re
 import time
 import pytest
 from playwright.sync_api import Page, expect, TimeoutError
@@ -638,13 +639,52 @@ class TestCronjobEditAndUpdate:
             page.wait_for_timeout(1200)
             logger.info(f"Job name changed to: {updated_name}")
 
-            log_test_step("Close the drawer to flush autosave")
-            edit_drawer.get_by_role("button", name="Close").click()
-            page.wait_for_timeout(1500)
+            log_test_step("Save the edit from the drawer footer")
+            # Upstream #8249/#8349 (5a1b52bd) dropped JobDrawer's useAutoSave
+            # wiring: the editor now keeps drafts and only persists them
+            # through the footer's Save button. The drawer's own close path
+            # (``onClose``) flushes nothing, so the previous "close the drawer
+            # to flush autosave" step closed the editor and silently threw the
+            # rename away -- the row kept the old name and the assertion below
+            # failed with "Updated job not found".
+            save_btn = edit_drawer.get_by_role(
+                "button", name=re.compile(r"Save|保存")
+            ).first
+            expect(save_btn).to_be_visible(timeout=5000)
+            save_btn.click()
+
+            log_test_step("Wait for the drawer to close, proving it landed")
+            # CronJobs' handleSubmit only calls handleDrawerClose() when
+            # updateJob() resolved successfully, so the editor disappearing is
+            # a stronger signal than the row itself: updateJob() applies an
+            # optimistic setJobs() first, which can paint the new name before
+            # the server has accepted anything.
+            expect(edit_drawer).to_be_hidden(timeout=10000)
             current_name = updated_name
 
+            log_test_step("Cross-check the rename against the server")
+            # Separates "the list did not refresh" from "nothing was saved",
+            # which the table-only assertion below cannot tell apart.
+            # GET /cron/jobs/{id} returns CronJobView = {spec, state}, so the
+            # name lives under "spec"; the fallback keeps this working if that
+            # envelope is ever flattened.
+            saved = requests.get(f"{api_url}/{job_id}", timeout=10)
+            assert saved.status_code == 200, (
+                f"GET /cron/jobs/{job_id} returned {saved.status_code}"
+            )
+            saved_body = saved.json()
+            server_name = saved_body.get("spec", saved_body).get("name")
+            assert server_name == updated_name, (
+                f"server kept the old name: expected {updated_name!r}, "
+                f"got {server_name!r}"
+            )
+            logger.info(f"Server-side name confirmed: {server_name}")
+
             log_test_step("Verify the update succeeded")
-            updated_row = page.locator(f'tr:has-text("{updated_name}")').first
+            updated_row = page.locator(f'tr:has-text("{updated_name}")')
+            # Auto-retrying wait first: the list re-renders after the drawer
+            # closes, so a bare count() right away can still see the old rows.
+            expect(updated_row.first).to_be_visible(timeout=10000)
             assert updated_row.count() > 0, f"Updated job not found: {updated_name}"
             logger.info(f"Job name update verified: {updated_name}")
 
