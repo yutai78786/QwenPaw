@@ -1,0 +1,70 @@
+name: beunit plugins budget probe
+
+# Fork-side probe for the three Windows/macOS nightly failures in
+# tests/unit/plugins. No approval gate: this only runs on our own fork.
+# Runs the whole plugins directory on all three matrix legs so the probe
+# proves both directions: the targeted failures turn green AND no new red
+# appears among the pre-existing base failures.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - beunit/probe-plugins-budget
+    paths:
+      - tests/unit/plugins/conftest.py
+      - tests/unit/plugins/test_sdk_context_lifecycle.py
+      - tests/unit/plugins/test_plugin_lifecycle_contracts.py
+      - .github/workflows/beunit-plugins-budget-probe.yml
+
+jobs:
+  probe:
+    name: plugins probe - py3.11 - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run the plugins unit directory (repeat 2x for flaky signal)
+        shell: bash
+        run: |
+          set +e
+          TOTAL_FAIL=0
+          for ROUND in 1 2; do
+            echo "===== ROUND_${ROUND} START ====="
+            python -m pytest tests/unit/plugins -q --no-header \
+              -p no:randomly --durations=25 \
+              > round_${ROUND}.txt 2>&1
+            RC=$?
+            echo "ROUND_${ROUND}_RC=${RC}"
+            tail -3 round_${ROUND}.txt
+            echo "--- ROUND_${ROUND} targeted cases ---"
+            grep -oE "test_runtime_owner_retries_failed_provider_scope_via_public_reload\[[a-z]+\]?" \
+              round_${ROUND}.txt | sort -u || true
+            grep -c "^FAILED" round_${ROUND}.txt || true
+            grep "^FAILED" round_${ROUND}.txt || true
+            if [ "${RC}" != "0" ]; then TOTAL_FAIL=$((TOTAL_FAIL+1)); fi
+          done
+          echo "TOTAL_FAILED_ROUNDS=${TOTAL_FAIL}"
+          exit 0
+
+      - name: Upload round logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugins-probe-${{ matrix.os }}
+          path: round_*.txt
