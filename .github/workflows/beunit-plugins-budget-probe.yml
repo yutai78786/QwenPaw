@@ -1,10 +1,13 @@
 name: beunit plugins budget probe
 
-# Fork-side probe for the three Windows/macOS nightly failures in
-# tests/unit/plugins. No approval gate: this only runs on our own fork.
-# Runs the whole plugins directory on all three matrix legs so the probe
-# proves both directions: the targeted failures turn green AND no new red
-# appears among the pre-existing base failures.
+# Fork-side probe for the three nightly failures in tests/unit/plugins
+# (Windows: interrupt budget / storage read race; macOS: unload budget).
+#
+# Install steps are copied verbatim from full-tests-nightly.yml so the
+# probe reproduces the nightly environment instead of inventing one.
+# The run step exits non-zero when any round fails, so the job conclusion
+# itself carries signal (an earlier revision ended with `exit 0` and was
+# therefore unconditionally green).
 
 on:
   workflow_dispatch:
@@ -25,42 +28,88 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install Linux isolation dependency
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          if sysctl kernel.apparmor_restrict_unprivileged_userns \
+            >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+
+      - name: Set up Node.js (for console build)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+          cache-dependency-path: console/package-lock.json
+
+      - name: Build console frontend
+        shell: bash
+        env:
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          cd console && npm ci && npm run build
+
+      - name: Copy console build into package
+        shell: bash
+        run: |
+          rm -rf src/qwenpaw/console/*
+          mkdir -p src/qwenpaw/console
+          cp -R console/dist/* src/qwenpaw/console/
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: 'pip'
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Run the plugins unit directory (repeat 2x for flaky signal)
+      - name: Secure Python certificate dependencies
         shell: bash
         run: |
-          set +e
+          python -m pip install --upgrade "pip>=26.2.2"
+          python -m pip install --upgrade "certifi>=2026.10.19"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          pip install -e ".[dev,test,full]" "setuptools<82"
+
+      - name: Verify the interpreter under test
+        shell: bash
+        run: |
+          python -c "import qwenpaw, pytest, sys; \
+            print('PYTHON', sys.version); \
+            print('PYTEST', pytest.__version__); \
+            print('QWENPAW', qwenpaw.__file__)"
+
+      - name: Run the plugins unit directory twice
+        shell: bash
+        run: |
           TOTAL_FAIL=0
           for ROUND in 1 2; do
             echo "===== ROUND_${ROUND} START ====="
-            python -m pytest tests/unit/plugins -q --no-header \
-              -p no:randomly --durations=25 \
-              > round_${ROUND}.txt 2>&1
+            pytest tests/unit/plugins -v -p no:randomly > round_${ROUND}.txt 2>&1
             RC=$?
             echo "ROUND_${ROUND}_RC=${RC}"
-            tail -3 round_${ROUND}.txt
+            grep -E "=+ [0-9]+ (failed|passed)" round_${ROUND}.txt | tail -1
             echo "--- ROUND_${ROUND} targeted cases ---"
-            grep -oE "test_runtime_owner_retries_failed_provider_scope_via_public_reload\[[a-z]+\]?" \
-              round_${ROUND}.txt | sort -u || true
+            grep -E "test_runtime_owner_retries_failed_provider_scope_via_public_reload|test_context_model_cancel_waits_for_actual_sync_provider_worker|test_interrupt_waits_for_actual_command_exit" \
+              round_${ROUND}.txt | grep -E "PASSED|FAILED" || true
+            echo "--- ROUND_${ROUND} FAILED list ---"
+            grep "^FAILED" round_${ROUND}.txt | sed -E 's/ - .*$//' | sort || true
+            echo "--- ROUND_${ROUND} FAILED count ---"
             grep -c "^FAILED" round_${ROUND}.txt || true
-            grep "^FAILED" round_${ROUND}.txt || true
             if [ "${RC}" != "0" ]; then TOTAL_FAIL=$((TOTAL_FAIL+1)); fi
           done
           echo "TOTAL_FAILED_ROUNDS=${TOTAL_FAIL}"
-          exit 0
+          exit "${TOTAL_FAIL}"
 
       - name: Upload round logs
         if: always()
