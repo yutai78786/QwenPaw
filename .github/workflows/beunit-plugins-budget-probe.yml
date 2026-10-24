@@ -92,6 +92,9 @@ jobs:
       - name: Run the plugins unit directory twice
         shell: bash
         run: |
+          # GitHub Actions runs bash with -eo pipefail, so a non-zero pytest
+          # exit would abort the loop before the round counters print.
+          set +e
           TOTAL_FAIL=0
           for ROUND in 1 2; do
             echo "===== ROUND_${ROUND} START ====="
