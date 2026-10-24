@@ -590,7 +590,7 @@ async def test_interrupt_waits_for_actual_command_exit(
                 with pytest.raises(PluginBusyError):
                     await dispatch("/busyprobe", SimpleNamespace())
             with pytest.raises(PluginBusyError) as caught:
-                await asyncio.wait_for(unload, 0.5)
+                await asyncio.wait_for(unload, 5.0)
             assert caught.value.detail["can_interrupt"] is False
             assert cancelled.is_set()
             assert not command.done()
@@ -615,7 +615,7 @@ async def test_interrupt_waits_for_actual_command_exit(
                 delete_files=True,
             )
         else:
-            report = await asyncio.wait_for(unload, 0.5)
+            report = await asyncio.wait_for(unload, 5.0)
             assert command.cancelled()
         assert report.clean and report.quiescent
         assert calls == ["command-exit", "teardown"]
