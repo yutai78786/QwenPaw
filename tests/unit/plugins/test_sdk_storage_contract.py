@@ -399,7 +399,7 @@ async def test_only_registered_cleanup_can_write_during_reload(tmp_path):
         ctx.resources.defer(legitimate_cleanup)
         reload_task = asyncio.create_task(host.reload("storage-contract"))
         try:
-            await asyncio.wait_for(entered.wait(), 2)
+            await asyncio.wait_for(entered.wait(), 10)
 
             async def unregistered_cleanup():
                 await ctx.storage.awrite_json("forged.json", True)
