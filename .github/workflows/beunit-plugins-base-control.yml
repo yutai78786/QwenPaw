@@ -1,0 +1,121 @@
+name: beunit plugins base control
+
+# CONTROL LEG: same probe, but on the BASE code (no beunit fixes), to decide
+# whether the two extra Windows reds seen in the fixed-code probe
+# (test_install_cancel_waits_for_copy_before_next_load and
+#  test_cancel_keeps_run_owned_until_failed_thread_scope_really_stops)
+# are base-inherent flakiness or caused by the fixes.
+#
+# Single round only: the fixed-code probe hung in round 2 for 82 minutes and
+# was killed by timeout-minutes, so a second round is deliberately not run
+# here. pytest-timeout caps any single test at 300s so a hang cannot eat the
+# whole job.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - beunit/probe-plugins-base-control
+    paths:
+      - .github/workflows/beunit-plugins-base-control.yml
+
+jobs:
+  control:
+    name: plugins BASE control - py3.11 - ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js (for console build)
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+          cache-dependency-path: console/package-lock.json
+
+      - name: Build console frontend
+        shell: bash
+        env:
+          NODE_OPTIONS: "--max-old-space-size=8192"
+        run: |
+          cd console && npm ci && npm run build
+
+      - name: Copy console build into package
+        shell: bash
+        run: |
+          rm -rf src/qwenpaw/console/*
+          mkdir -p src/qwenpaw/console
+          cp -R console/dist/* src/qwenpaw/console/
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      - name: Secure Python certificate dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade "pip>=26.2.2"
+          python -m pip install --upgrade "certifi>=2026.10.19"
+
+      - name: Install dependencies
+        shell: bash
+        run: |
+          pip install -e ".[dev,test,full]" "setuptools<82"
+
+      - name: Assert the tree under test is the BASE tree
+        shell: bash
+        run: |
+          # Positive control for the whole experiment: the three files the
+          # fix touches must carry their base content here.
+          set -e
+          python - <<'PY'
+          import hashlib, pathlib
+          EXPECT = {
+              "tests/unit/plugins/conftest.py":
+                  "43d333b67b2a4787e4a1e52f19eeb918",
+              "tests/unit/plugins/test_sdk_context_lifecycle.py":
+                  "b7c149602973d1d1b9ebb73ff0e18ccf",
+              "tests/unit/plugins/test_plugin_lifecycle_contracts.py":
+                  "7c19814bc2ad88e3f80ebc8bd144f117",
+          }
+          bad = []
+          for rel, want in EXPECT.items():
+              got = hashlib.md5(pathlib.Path(rel).read_bytes()).hexdigest()
+              print(f"{rel}: {got} {'EQ' if got == want else 'DIFFERS'}")
+              if got != want:
+                  bad.append(rel)
+          assert not bad, f"NOT the base tree: {bad}"
+          print("BASE TREE ASSERTED")
+          PY
+
+      - name: Run the plugins unit directory once
+        shell: bash
+        run: |
+          set +e
+          pytest tests/unit/plugins -v -p no:randomly --timeout=300 \
+            > round_1.txt 2>&1
+          RC=$?
+          echo "ROUND_1_RC=${RC}"
+          grep -E "=+ [0-9]+ (failed|passed)" round_1.txt | tail -1
+          echo "--- BASE control FAILED list ---"
+          grep "^FAILED" round_1.txt | sed -E 's/ - .*$//' | sort
+          echo "--- BASE control FAILED count ---"
+          grep -c "^FAILED" round_1.txt
+          echo "--- the two contested cases ---"
+          grep -E "test_install_cancel_waits_for_copy_before_next_load|test_cancel_keeps_run_owned_until_failed_thread_scope_really_stops|test_runtime_owner_retries_failed_provider_scope_via_public_reload|test_context_model_cancel_waits_for_actual_sync_provider_worker|test_interrupt_waits_for_actual_command_exit" \
+            round_1.txt | grep -E "PASSED|FAILED"
+          exit "${RC}"
+
+      - name: Upload round log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugins-base-control-${{ matrix.os }}
+          path: round_1.txt
