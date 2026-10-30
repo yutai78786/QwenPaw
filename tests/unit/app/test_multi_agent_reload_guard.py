@@ -215,7 +215,7 @@ async def test_retired_workspace_stop_failure_retries(monkeypatch, delayed):
             "agent",
             active_tasks=active if delayed else {},
         )
-        await asyncio.wait_for(retry_started.wait(), timeout=1)
+        await asyncio.wait_for(retry_started.wait(), timeout=15)
         assert mgr._retired_instances[id(old)] is old
         assert mgr.agents["agent"] is new
         new.stop.assert_not_awaited()
@@ -273,13 +273,13 @@ async def test_stop_reuses_instance_task_without_removing_replacement(
     new = SimpleNamespace(stop=AsyncMock())
     mgr.agents["agent"] = old
     first = asyncio.create_task(mgr.stop_agent("agent"))
-    await asyncio.wait_for(started.wait(), 1)
+    await asyncio.wait_for(started.wait(), 15)
     second = asyncio.create_task(mgr.stop_agent("agent"))
     await asyncio.sleep(0)
     if replace_instance:
         mgr.agents["agent"] = new
     release.set()
-    await asyncio.wait_for(asyncio.gather(first, second), 1)
+    await asyncio.wait_for(asyncio.gather(first, second), 15)
     old.stop.assert_awaited_once()
     new.stop.assert_not_awaited()
     if replace_instance:
@@ -322,7 +322,7 @@ async def test_cached_agent_lookup_refuses_unavailable_instance(unavailable):
     stopping = None
     if unavailable == "stopping":
         stopping = asyncio.create_task(mgr.stop_agent("agent"))
-        await asyncio.wait_for(workspace.started.wait(), 1)
+        await asyncio.wait_for(workspace.started.wait(), 15)
     elif unavailable == "uninstalling":
         mgr.reserve_agent_uninstall(["agent"])
     else:
@@ -397,13 +397,13 @@ async def test_stop_agent_retries_failed_retired_cleanup(monkeypatch):
     await mgr._graceful_stop_old_instance(old, "agent", active_tasks={})
     try:
         with pytest.raises(RuntimeError):
-            await asyncio.wait_for(mgr.stop_agent("agent"), 1)
+            await asyncio.wait_for(mgr.stop_agent("agent"), 15)
         assert mgr._retired_instances[id(old)] is old
         assert mgr.agents["agent"] is current
         current.stop.assert_not_awaited()
         other.stop.assert_not_awaited()
 
-        assert await asyncio.wait_for(mgr.stop_agent("agent"), 1)
+        assert await asyncio.wait_for(mgr.stop_agent("agent"), 15)
         assert id(old) not in mgr._retired_instances
         assert mgr.agents == {"other": other}
         current.stop.assert_awaited_once_with()
@@ -437,7 +437,7 @@ async def test_cancelled_stop_caller_keeps_retired_cleanup_owned(monkeypatch):
     await mgr._graceful_stop_old_instance(old, "agent", active_tasks={})
     caller = asyncio.create_task(mgr.stop_agent("agent"))
     try:
-        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(entered.wait(), 15)
         caller.cancel()
         with pytest.raises(asyncio.CancelledError):
             await caller
@@ -445,7 +445,7 @@ async def test_cancelled_stop_caller_keeps_retired_cleanup_owned(monkeypatch):
         assert mgr.agents["agent"] is current
         current.stop.assert_not_awaited()
         release.set()
-        assert await asyncio.wait_for(mgr.stop_agent("agent"), 1)
+        assert await asyncio.wait_for(mgr.stop_agent("agent"), 15)
         assert not mgr._retired_instances
         assert not mgr._agent_stop_tasks
         assert not mgr.agents

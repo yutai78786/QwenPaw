@@ -90,7 +90,18 @@ plugin = Plugin()
 
 async def until(predicate):
     async with asyncio.timeout(WAIT_TIMEOUT):
-        while not predicate():
+        while True:
+            try:
+                if predicate():
+                    return
+            except OSError:
+                # The poll reads a file that a worker thread atomically
+                # replaces.  On Windows a reader can transiently observe
+                # PermissionError (Errno 13) while os.replace holds the
+                # target.  Retrying keeps the contract unchanged: the
+                # predicate must still turn true inside WAIT_TIMEOUT,
+                # otherwise asyncio.timeout fires.
+                pass
             await asyncio.sleep(0.01)
 
 
