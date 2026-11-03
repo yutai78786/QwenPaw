@@ -902,14 +902,23 @@ class TestToolApproval:
         test_name = request.node.name
 
         # Control the decision setting without changing the server configuration.
+        #
+        # #8556 ("fix(console): select decision-model approval directly",
+        # 2026-11-03) collapsed the nested ``decision`` object of the thinking
+        # view into the single boolean ``decision_model_configured``:
+        # ``DecisionSettings`` was deleted from
+        # console/src/features/thinking/types.ts and
+        # ``useAdvisorDecisionAvailability`` now reads
+        # ``view.decision_model_configured`` instead of ``view.decision?.enabled``.
+        # Seeding the removed shape left the frontend with ``undefined``, and
+        # ``ApprovalLevelToggle`` gates JEV on ``decisionModelConfigured !== true``
+        # -- so the item stayed ``aria-disabled="true"`` for BOTH parametrized
+        # instances. The False instance passed for the wrong reason (gate default
+        # rather than the seeded state) while the True instance failed.
         def set_decision_state(route):
             response = route.fetch()
             view = response.json()
-            view["decision"] = {
-                "configured": True,
-                "enabled": decision_enabled,
-                "override": decision_enabled,
-            }
+            view["decision_model_configured"] = decision_enabled
             route.fulfill(response=response, json=view)
 
         thinking_url = re.compile(
