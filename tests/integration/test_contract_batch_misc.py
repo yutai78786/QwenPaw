@@ -13,7 +13,8 @@ set, so the router + service code paths execute without mutating state.
 from __future__ import annotations
 
 import pytest
-from helpers import default_http_timeout
+from helpers import STREAM_CONTRACT_DEADLINE, default_http_timeout
+from helpers import stream_status_only
 
 _T = default_http_timeout(15.0)
 
@@ -624,9 +625,23 @@ def test_post_api_mail_access_control_remark_26(app_server) -> None:
 @pytest.mark.p1
 def test_post_api_console_chat_27(app_server) -> None:
     """Contract: POST /api/console/chat with empty body is rejected or safely
-    handled."""
-    resp = _req(app_server, "POST", "/api/console/chat", json={})
-    assert resp.status_code in (
+    handled.
+
+    This route answers with an SSE stream whose length is decided by the
+    run it starts, so it goes through ``stream_status_only``: the status
+    class is all the contract needs, while an unbounded drain leaves the
+    case racing the ``--timeout=300`` per-test wall (nightly run
+    43268192213 inflated all four legs to 220~300s and crashed the
+    Windows worker).
+    """
+    status = stream_status_only(
+        app_server,
+        "POST",
+        "/api/console/chat",
+        json={},
+        deadline=STREAM_CONTRACT_DEADLINE,
+    )
+    assert status in (
         200,
         400,
         403,

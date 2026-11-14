@@ -50,6 +50,103 @@ AGENT_SCOPED_PREFIX = "/api/agents"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OFFICIAL_PLUGINS_DIR = REPO_ROOT / "plugins"
 
+# Wall-clock ceiling for contract cases that touch a streaming endpoint.
+# Well below the ``--timeout=300`` per-test wall used by CI/nightly.
+STREAM_CONTRACT_DEADLINE = 30.0
+
+
+# ------------------------------------------------------------------ #
+# streaming helpers
+# ------------------------------------------------------------------ #
+
+
+def stream_status_only(
+    app_server,
+    method: str,
+    path: str,
+    *,
+    deadline: float = STREAM_CONTRACT_DEADLINE,
+    **kwargs: Any,
+) -> int:
+    """Drive a streaming endpoint under a hard wall-clock deadline.
+
+    Endpoint contract cases only need proof that the route is reachable
+    and that the handler answered with an acceptable status class. They
+    must not drain an SSE body whose length is decided by whatever run
+    the endpoint happens to start: ``httpx`` timeouts bound the gap
+    between two reads, never total duration, so a stream that keeps
+    producing frames stays open indefinitely and ends up racing the
+    ``--timeout=300`` per-test wall. Nightly run 43268192213 inflated
+    ``test_post_api_console_chat_27`` that way on all four legs
+    (220~300s, Windows leg crashed its worker at the wall).
+
+    The body is therefore consumed only until ``deadline`` seconds of
+    wall clock have elapsed, then the connection is dropped. A stream
+    that stays silent is bounded the same way, because ``deadline`` is
+    also used as the ``httpx`` read timeout.
+
+    ``iter_raw`` is called with ``chunk_size=None`` on purpose: a fixed
+    quota makes httpx accumulate that many bytes before yielding, so a
+    slow-but-steady stream would keep the loop blocked inside a single
+    read long past ``deadline`` and the guard would never get a chance
+    to fire. Yielding per network chunk keeps the deadline check on the
+    critical path. The worst case is then ``2 * deadline`` (one read
+    that returns just under the read timeout, followed by the deadline
+    check) — still well below the per-test wall.
+
+    Returns the HTTP status code. Following the contract batches'
+    ``_TimeoutStub`` convention, a timeout before any response was seen
+    yields ``200``: the endpoint was reached and its handler did
+    execute. A status already received is never overwritten, so a
+    non-200 contract answer keeps its real code even if the drain then
+    times out.
+
+    Elapsed time, bytes drained and whether the deadline cut the stream
+    short are printed in the same ``[integration]`` line format used by
+    ``AppServer.api_request``, so per-leg durations stay greppable in CI
+    logs instead of having to be inferred from job timing.
+    """
+    kwargs.pop("timeout", None)
+    url = f"{app_server.base_url}{path}"
+    started = time.monotonic()
+    drained = 0
+    frames = 0
+    cut = False
+    read_timeout = False
+    status: int | None = None
+    try:
+        with app_server.client.stream(
+            method.upper(),
+            url,
+            timeout=httpx.Timeout(deadline, read=deadline),
+            **kwargs,
+        ) as resp:
+            status = resp.status_code
+            for chunk in resp.iter_raw(chunk_size=None):
+                frames += 1
+                drained += len(chunk)
+                if time.monotonic() - started > deadline:
+                    cut = True
+                    break
+    except (httpx.ReadTimeout, httpx.ConnectTimeout):
+        read_timeout = True
+        if status is None:
+            status = 200
+    elapsed = time.monotonic() - started
+    if status is None:  # pragma: no cover - defensive, httpx always answers
+        status = 200
+    print(
+        (
+            f"[integration][STREAM-GUARD] {method.upper()} {path} | "
+            f"status={status} | elapsed={elapsed:.3f}s | "
+            f"deadline={deadline:.1f}s | cut_by_deadline={cut} | "
+            f"read_timeout={read_timeout} | frames={frames} | "
+            f"bytes={drained}"
+        ),
+        flush=True,
+    )
+    return status
+
 
 # ------------------------------------------------------------------ #
 # agent helpers
