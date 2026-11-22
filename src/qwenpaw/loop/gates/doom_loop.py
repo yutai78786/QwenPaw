@@ -13,6 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any
 
+from ...config.config import DoomLoopStageConfig
 from .base import (
     StopAction,
     StopHandlerResult,
@@ -37,7 +38,8 @@ class _DoomState:
     history: deque = field(default_factory=deque)
     consecutive_hits: int = 0
     prompt: str = ""
-    last_recorded_iter: int = -1
+    recorded_tool_call_ids: set[str] = field(default_factory=set)
+    history_dirty: bool = False
 
 
 class DoomLoopGate(LoopGate):
@@ -64,7 +66,7 @@ class DoomLoopGate(LoopGate):
         *,
         window_size: int = 3,
         similarity_threshold: float = 1.0,
-        stages: list | None = None,
+        stages: list[DoomLoopStageConfig] | None = None,
     ) -> None:
         super().__init__()
         self._window_size = max(2, window_size)
@@ -99,6 +101,7 @@ class DoomLoopGate(LoopGate):
                 args_hash=args_hash,
             ),
         )
+        state.history_dirty = True
 
     def reset_turn(self) -> None:
         """Clear history and counters for current session."""
@@ -107,7 +110,8 @@ class DoomLoopGate(LoopGate):
             state.history.clear()
             state.consecutive_hits = 0
             state.prompt = ""
-            state.last_recorded_iter = -1
+            state.recorded_tool_call_ids.clear()
+            state.history_dirty = False
 
     async def check(
         self,
@@ -123,6 +127,9 @@ class DoomLoopGate(LoopGate):
         )
         state = self._ensure_state()
         self._auto_record_from_ctx(ctx, state)
+        if not state.history_dirty:
+            return _bypass
+        state.history_dirty = False
 
         is_looping = self._detect_repetition(state)
 
@@ -178,16 +185,14 @@ class DoomLoopGate(LoopGate):
         ctx: Any,
         state: _DoomState,
     ) -> None:
-        """Extract latest tool call from agent context."""
+        """Record tool calls of this turn that were not seen yet."""
         if not isinstance(ctx, dict):
+            return
+        if ctx.get("has_tool_calls") is False:
             return
         agent = ctx.get("agent")
         if agent is None:
             return
-        cur_iter = ctx.get("iteration", 0)
-        if cur_iter <= state.last_recorded_iter:
-            return
-        state.last_recorded_iter = cur_iter
 
         context = getattr(
             getattr(agent, "state", None),
@@ -200,29 +205,45 @@ class DoomLoopGate(LoopGate):
         content = getattr(last_msg, "content", None)
         if not content or not isinstance(content, list):
             return
-        for block in reversed(content):
-            btype = getattr(block, "type", None)
-            if isinstance(block, dict):
-                btype = block.get("type")
-            if btype in ("tool_call", "tool_use"):
-                name = (
-                    block.get("name", "")
-                    if isinstance(block, dict)
-                    else getattr(block, "name", "")
-                )
-                raw_input = (
-                    block.get("input", "")
-                    if isinstance(block, dict)
-                    else getattr(block, "input", "")
-                )
-                args_hash = self._hash_args(raw_input)
-                state.history.append(
-                    _ToolCallRecord(
-                        tool_name=name,
-                        args_hash=args_hash,
-                    ),
-                )
-                return
+
+        # One reply may be split into several assistant messages that all
+        # reuse ``reply_id`` as their id: a warning injects a user message,
+        # then the next reasoning step opens a new assistant message. The
+        # message id and a per-message block count therefore cannot tell
+        # which calls were already recorded. Tool call blocks carry a
+        # unique id, so record every id not seen yet in this turn.
+        for block in content:
+            btype = (
+                block.get("type")
+                if isinstance(block, dict)
+                else getattr(block, "type", None)
+            )
+            if btype not in ("tool_call", "tool_use"):
+                continue
+            call_id = (
+                block.get("id")
+                if isinstance(block, dict)
+                else getattr(block, "id", None)
+            )
+            if not isinstance(call_id, str) or not call_id:
+                # Dict-shaped blocks may omit the id; fall back to the
+                # block object so re-checking a snapshot stays a no-op.
+                call_id = f"object:{id(block)}"
+            if call_id in state.recorded_tool_call_ids:
+                continue
+            state.recorded_tool_call_ids.add(call_id)
+            name = (
+                block.get("name", "")
+                if isinstance(block, dict)
+                else getattr(block, "name", "")
+            )
+            raw_input = (
+                block.get("input", "")
+                if isinstance(block, dict)
+                else getattr(block, "input", "")
+            )
+            args_hash = self._hash_args(raw_input)
+            self.record(name, args_hash)
 
     @staticmethod
     def _hash_args(raw_input: Any) -> str:

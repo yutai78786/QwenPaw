@@ -10,6 +10,10 @@ session is created so clients (e.g. the paw TUI) can offer autocompletion.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
 
 from acp.schema import AllowedOutcome, RequestPermissionResponse
 
@@ -168,40 +172,61 @@ async def test_registered_help_text_command_is_executed_and_advertised():
     assert by_name["demo_cmd"] == "Demo command for ACP advertise regression"
 
 
-async def test_new_session_advertises_commands():
+@pytest.fixture
+async def mcp_host(tmp_path):
+    from qwenpaw.plugins.testing import PluginTestHost
+
+    async with PluginTestHost(tmp_path / "host") as host:
+        await host.load(
+            Path(__file__).resolve().parents[3] / "plugins/protocol/mcp",
+        )
+        yield host
+
+
+async def test_new_session_advertises_commands(mcp_host):
     agent = QwenPawACPAgent(agent_id="default")
     conn = _FakeConn()
     agent.on_connect(conn)
 
-    response = await agent.new_session(cwd="/tmp")
-    await _drain(conn)
+    try:
+        response = await agent.new_session(cwd="/tmp")
+        await _drain(conn)
 
-    assert conn.updates, "expected an available_commands_update notification"
-    session_id, update = conn.updates[0]
-    assert session_id == response.session_id
-    assert update.session_update == "available_commands_update"
+        assert (
+            conn.updates
+        ), "expected an available_commands_update notification"
+        session_id, update = conn.updates[0]
+        assert session_id == response.session_id
+        assert update.session_update == "available_commands_update"
 
-    # Commands are now dynamically queried from registry; verify structure
-    # All advertised commands should have descriptions
-    assert all(c.description for c in update.available_commands)
+        # Commands are now dynamically queried from registry; verify structure
+        # All advertised commands should have descriptions
+        assert all(c.description for c in update.available_commands)
+    finally:
+        await agent._shutdown_workspace()
 
 
-async def test_load_session_advertises_commands():
+async def test_load_session_advertises_commands(mcp_host):
     agent = QwenPawACPAgent(agent_id="default")
     conn = _FakeConn()
     agent.on_connect(conn)
 
-    await agent.load_session(cwd="/tmp", session_id="sess-123")
-    await _drain(conn)
+    try:
+        await agent.load_session(cwd="/tmp", session_id="sess-123")
+        await _drain(conn)
 
-    assert conn.updates
-    session_id, update = conn.updates[0]
-    assert session_id == "sess-123"
-    assert update.session_update == "available_commands_update"
+        assert conn.updates
+        session_id, update = conn.updates[0]
+        assert session_id == "sess-123"
+        assert update.session_update == "available_commands_update"
+    finally:
+        await agent._shutdown_workspace()
 
 
-async def test_new_session_reports_agent_id_in_meta():
+async def test_new_session_reports_agent_id_in_meta(monkeypatch):
     agent = QwenPawACPAgent(agent_id="my-agent")
+    monkeypatch.setattr(agent, "_require_mcp", AsyncMock())
+    monkeypatch.setattr(agent, "_advertise_commands", AsyncMock())
     conn = _FakeConn()
     agent.on_connect(conn)
 
@@ -220,6 +245,7 @@ async def test_prompt_passes_resolved_agent_id_to_runtime(monkeypatch):
                 yield None
 
     agent = QwenPawACPAgent(agent_id="my-agent")
+    monkeypatch.setattr(agent, "_require_mcp", AsyncMock())
     conn = _FakeConn()
     workspace = _FakeWorkspace()
     agent.on_connect(conn)
@@ -472,7 +498,11 @@ async def test_approval_bridge_resolves_pattern_scope(monkeypatch):
     }
 
 
-async def test_approval_bridge_expires_when_pending_times_out(monkeypatch):
+@pytest.mark.parametrize(f"cancel_bridge", [False, True])
+async def test_approval_bridge_expires_when_pending_times_out(
+    monkeypatch,
+    cancel_bridge,
+):
     from qwenpaw.app.approvals.service import ApprovalService
     from qwenpaw.security.tool_guard.approval import ApprovalDecision
     from qwenpaw.security.tool_guard.models import (
@@ -530,10 +560,18 @@ async def test_approval_bridge_expires_when_pending_times_out(monkeypatch):
     )
     await asyncio.wait_for(conn.started.wait(), timeout=1.0)
 
+    if cancel_bridge:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=1.0)
+        assert conn.cancelled is True
+
     await approval_svc.resolve_request(
         pending.request_id,
         ApprovalDecision.TIMEOUT,
     )
+    if cancel_bridge:
+        return
     await asyncio.wait_for(task, timeout=1.0)
 
     assert conn.cancelled is True
@@ -542,10 +580,10 @@ async def test_approval_bridge_expires_when_pending_times_out(monkeypatch):
 
 
 async def test_approval_bridge_survives_wait_for_timeout(monkeypatch):
-    """The real timeout path (``wait_for_approval`` → ``asyncio.wait_for``)
-    cancels the shared pending future instead of setting a TIMEOUT result.
-    The bridge must not let that CancelledError escape (it would kill the
-    per-turn approval polling loop) and must still cancel the client prompt.
+    """The service timeout must finish the bridge and cancel its prompt.
+
+    The shared approval future resolves to TIMEOUT, so observers must finish
+    normally and the per-turn approval polling loop must keep running.
     """
     from qwenpaw.app.approvals.service import ApprovalService
     from qwenpaw.security.tool_guard.approval import ApprovalDecision

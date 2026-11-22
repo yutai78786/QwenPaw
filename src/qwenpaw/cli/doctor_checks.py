@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from ..utils.io_utils import run_sync_io
 from ..__version__ import __version__
 from ..agents.skill_system import (
     get_workspace_skills_dir,
@@ -57,8 +58,7 @@ from ..providers.provider import Provider
 # Log file opened on app startup (see ``qwenpaw.app._app`` lifespan).
 APP_LOG_BASENAME = LOG_FILE_BASENAME
 
-# Built-in local llama.cpp provider id; legacy configs may still use
-# copaw-local.
+# Local llama.cpp provider IDs; legacy configs may still use copaw-local.
 _QWENPAW_LOCAL_PROVIDER_IDS = frozenset({"qwenpaw-local", "copaw-local"})
 
 
@@ -1038,8 +1038,7 @@ def active_llm_local_failure_hint(provider: Provider, provider_id: str) -> str:
         return (
             f"Hint: {PROJECT_NAME} Local uses llama.cpp. Start the local "
             f"server from the {PROJECT_NAME} console or install the llama.cpp "
-            "binary from there. Run `qwenpaw doctor --deep` to see llama.cpp "
-            "install and server status."
+            "binary from there."
         )
     if getattr(provider, "is_local", False):
         base = (
@@ -1052,10 +1051,13 @@ def active_llm_local_failure_hint(provider: Provider, provider_id: str) -> str:
     return ""
 
 
+# TODO: Move local model diagnostics into the plugin CLI integration.
 def qwenpaw_local_llm_deep_notes() -> list[str]:
     """Read-only llama.cpp install + server snapshot (``--deep`` / local)."""
     try:
-        from ..local_models.manager import LocalModelManager
+        from ..local_models.manager import (  # pylint: disable=no-name-in-module
+            LocalModelManager,
+        )
     except Exception as exc:  # pylint: disable=broad-exception-caught
         return [f"LocalModelManager unavailable: {exc}"]
     try:
@@ -1140,8 +1142,9 @@ async def check_enabled_agents_model_connections(
     """
     from ..providers.provider_manager import ProviderManager
 
+    del deep
     mgr = ProviderManager.get_instance()
-    active_slot = mgr.get_active_model()
+    active_slot = await run_sync_io(mgr.get_active_model)
     lines: list[str] = []
     notes: list[str] = []
     all_ok = True
@@ -1171,8 +1174,15 @@ async def check_enabled_agents_model_connections(
             lines.append(f"{agent_id}: FAIL — invalid model slot ({source})")
             continue
 
-        provider = mgr.get_provider(pid)
+        provider = await run_sync_io(mgr.get_provider, pid)
         if provider is None:
+            # TODO: Resolve plugin providers through the plugin CLI contract.
+            if pid in _QWENPAW_LOCAL_PROVIDER_IDS:
+                lines.append(
+                    f"{agent_id}: SKIP — {pid} / {model} "
+                    "(plugin CLI integration pending)",
+                )
+                continue
             all_ok = False
             lines.append(f"{agent_id}: FAIL — provider not found: {pid!r}")
             continue
@@ -1191,10 +1201,11 @@ async def check_enabled_agents_model_connections(
             )
             continue
 
-        if deep and pid in _QWENPAW_LOCAL_PROVIDER_IDS:
-            # Only add once (same underlying llama.cpp runtime).
-            if not any("llama.cpp" in n for n in notes):
-                notes.extend(qwenpaw_local_llm_deep_notes())
+        # TODO: Restore local diagnostics through the plugin CLI contract.
+        # if deep and pid in _QWENPAW_LOCAL_PROVIDER_IDS:
+        #     # Only add once (same underlying llama.cpp runtime).
+        #     if not any("llama.cpp" in n for n in notes):
+        #         notes.extend(qwenpaw_local_llm_deep_notes())
 
         if not getattr(provider, "support_connection_check", True):
             lines.append(

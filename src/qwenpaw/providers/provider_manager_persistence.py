@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+# Provider companion modules share ownership of runtime-only state.
+# pylint: disable=protected-access
 """Persistence and migration operations for ProviderManager."""
 
 import asyncio
@@ -9,11 +11,12 @@ import tempfile
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Literal
 
-from ..config.config import ModelSlotConfig
+from ..config.config import ModelSlotConfig, ModelType
 from ..exceptions import ProviderError
 from ..security.secret_store import (
     PROVIDER_SECRET_FIELDS,
     decrypt_dict_fields,
+    encrypt_dict_fields,
     is_encrypted,
 )
 from ..utils.io_utils import (
@@ -28,6 +31,7 @@ from .ollama_provider import OllamaProvider
 from .openai_provider import OpenAIProvider
 from .openai_response_provider import OpenAIResponseProvider
 from .openrouter_provider import OpenRouterProvider
+from .model_sync import invalidate_api_metadata
 from .provider import ModelInfo, Provider, ProviderInfo
 from .provider_manager_host import ProviderManagerHost
 from .provider_discovery import (
@@ -48,6 +52,8 @@ from .provider_update_fields import (
 )
 
 logger = logging.getLogger(__name__)
+
+_LEGACY_LOCAL_PROVIDER_NAME = "QwenPaw Local"
 
 ProviderStorageKind = Literal["builtin", "custom", "plugin"]
 
@@ -72,13 +78,13 @@ class ProviderManagerPersistenceMixin(
             asyncio.Lock(),
         )
         async with lock:
-            provider = self.get_provider(provider_id)
+            provider = await run_sync_io(self.get_provider, provider_id)
             if provider is None:
                 return None
-            candidate = provider.model_copy(deep=True)
+            candidate = provider.configuration_snapshot()
             result = await operation(candidate)
             provider_path = await self._provider_config_path_async(provider_id)
-            snapshot = candidate.model_copy(deep=True)
+            snapshot = candidate.configuration_snapshot()
 
             async def persist_and_commit() -> None:
                 await run_sync_io(
@@ -87,7 +93,7 @@ class ProviderManagerPersistenceMixin(
                     snapshot,
                     provider_path,
                 )
-                self._commit_provider_snapshot(provider_id, snapshot)
+                await self._commit_provider_snapshot(provider_id, snapshot)
                 self._bump_provider_revision(provider_id)
 
             await run_async_to_completion(persist_and_commit())
@@ -166,13 +172,14 @@ class ProviderManagerPersistenceMixin(
         plugin = self.plugin_providers[provider_id]
         latest = plugin["class"](**plugin["info"].model_dump())
         if update_kind == "replace":
-            return result.model_copy(deep=True)
+            return result.configuration_snapshot()
         if update_kind == "config":
             for field in fields or set():
                 if field in latest.__class__.model_fields:
                     setattr(latest, field, getattr(result, field))
             if _CONNECTION_CONFIG_FIELDS.intersection(fields or set()):
                 self._reset_model_availability(latest)
+                invalidate_api_metadata(latest)
             return latest
         if update_kind == "discovery":
             latest.discovered_models = [
@@ -182,7 +189,7 @@ class ProviderManagerPersistenceMixin(
             latest.models_last_synced_at = result.models_last_synced_at
             latest.models_last_sync_error = result.models_last_sync_error
             latest.models_syncing = result.models_syncing
-            for model in result.configured_models():
+            for model in result.all_models():
                 self._copy_model_fields(
                     latest,
                     result,
@@ -211,6 +218,13 @@ class ProviderManagerPersistenceMixin(
         if model_id is None:
             raise ValueError(f"{update_kind} requires a model ID")
         if update_kind == "availability":
+            if (
+                latest.get_model_info(model_id) is None
+                and latest.get_discovered_model_info(model_id) is None
+            ):
+                card = result.get_discovered_model_info(model_id)
+                if card is not None:
+                    latest.discovered_models.append(card.model_copy(deep=True))
             self._copy_model_fields(
                 latest,
                 result,
@@ -280,7 +294,7 @@ class ProviderManagerPersistenceMixin(
         """Persist provider state without blocking the event loop."""
         provider_id = self._normalize_provider_id(provider_id)
         if provider is None:
-            provider = self.get_provider(provider_id)
+            provider = await run_sync_io(self.get_provider, provider_id)
         if provider is None:
             return
         lock = self._provider_save_locks.setdefault(
@@ -331,56 +345,56 @@ class ProviderManagerPersistenceMixin(
             snapshot,
             provider_path,
         )
-        self._commit_provider_snapshot(provider_id, snapshot)
+        await self._commit_provider_snapshot(provider_id, snapshot)
 
-    def _commit_provider_snapshot(
+    async def _commit_provider_snapshot(
         self,
         provider_id: str,
         snapshot: Provider,
     ) -> None:
-        """Commit a successfully persisted snapshot on the event loop."""
-        if provider_id in self.plugin_providers:
-            self.plugin_providers[provider_id]["info"] = ProviderInfo(
-                **snapshot.model_dump(),
-            )
-            return
-        current = self.get_provider(provider_id)
-        if (
-            current is not None
-            and provider_id in self.custom_providers
-            and current.__class__ is not snapshot.__class__
-        ):
-            self.custom_providers[provider_id] = snapshot.model_copy(
-                deep=True,
-            )
-        elif current is not None:
-            self._copy_provider_state(current, snapshot)
+        """Replace runtime instances only after configuration is saved."""
+        current = await run_sync_io(
+            self._install_provider_snapshot,
+            provider_id,
+            snapshot,
+        )
+        await self.clear_invalid_default_models(provider_id, snapshot)
+        if current is not None:
+            try:
+                await current.close()
+            except Exception:
+                logger.warning(f"Could not close retired provider resources")
 
-    @staticmethod
-    def _copy_provider_state(target: Provider, source: Provider) -> None:
-        """Replace one in-memory provider state with a deep snapshot."""
-        snapshot = source.model_copy(deep=True)
-        for field in target.__class__.model_fields:
-            if field in {"models", "extra_models", "discovered_models"}:
-                existing = {
-                    model.id: model for model in getattr(target, field)
-                }
-                copied_models = []
-                for source_model in getattr(snapshot, field):
-                    target_model = existing.get(source_model.id)
-                    if target_model is None:
-                        copied_models.append(source_model)
-                        continue
-                    for model_field in target_model.__class__.model_fields:
-                        setattr(
-                            target_model,
-                            model_field,
-                            getattr(source_model, model_field),
-                        )
-                    copied_models.append(target_model)
-                setattr(target, field, copied_models)
-                continue
-            setattr(target, field, getattr(snapshot, field))
+    def _install_provider_snapshot(
+        self,
+        provider_id: str,
+        snapshot: Provider,
+    ) -> Provider | None:
+        """Install a rebuilt instance and retain the shared billing guard."""
+        if provider_id in self.plugin_providers:
+            registration = self.plugin_providers[provider_id]
+            registration["info"] = snapshot.configuration_snapshot()
+            return None
+        current = self.get_provider(provider_id)
+        rebuilt = snapshot.configuration_snapshot()
+        registry = (
+            self.builtin_providers
+            if provider_id in self.builtin_providers
+            else self.custom_providers
+        )
+        if current is not None:
+            rebuilt._billing_blocks = current._billing_blocks
+        rebuilt._billing_blocks.clear()
+        rebuilt._billing_blocks.update(
+            model.id
+            for model in {
+                item.id: item
+                for item in rebuilt.discovered_models + rebuilt.all_models()
+            }.values()
+            if model.requires_paid_confirmation
+        )
+        registry[provider_id] = rebuilt
+        return current
 
     def _save_provider_snapshot_locked(
         self,
@@ -410,7 +424,7 @@ class ProviderManagerPersistenceMixin(
         write already resurrected its file -- delete it instead, or the
         removed provider would come back on the next startup glob.
         """
-        latest = self.get_provider(provider_id)
+        latest = await run_sync_io(self.get_provider, provider_id)
         if latest is None:
             await run_sync_io(
                 self._remove_orphan_snapshot,
@@ -420,7 +434,7 @@ class ProviderManagerPersistenceMixin(
         await run_sync_io(
             self._save_provider_snapshot_locked,
             provider_id,
-            latest.model_copy(deep=True),
+            latest.configuration_snapshot(),
             provider_path,
         )
 
@@ -448,10 +462,10 @@ class ProviderManagerPersistenceMixin(
         """Merge an operation result into the current provider snapshot."""
         current = self.get_provider(provider_id)
         if current is None or current is result:
-            return result.model_copy(deep=True)
-        latest = current.model_copy(deep=True)
+            return result.configuration_snapshot()
+        latest = current.configuration_snapshot()
         if update_kind == "replace":
-            snapshot = result.model_copy(deep=True)
+            snapshot = result.configuration_snapshot()
             snapshot.removed_model_ids = list(current.removed_model_ids)
             return snapshot
         if update_kind == "config":
@@ -460,6 +474,7 @@ class ProviderManagerPersistenceMixin(
                     setattr(latest, field, getattr(result, field))
             if _CONNECTION_CONFIG_FIELDS.intersection(fields or set()):
                 self._reset_model_availability(latest)
+                invalidate_api_metadata(latest)
             return latest
         if update_kind == "discovery":
             latest.discovered_models = [
@@ -469,7 +484,7 @@ class ProviderManagerPersistenceMixin(
             latest.models_last_synced_at = result.models_last_synced_at
             latest.models_last_sync_error = result.models_last_sync_error
             latest.models_syncing = result.models_syncing
-            for model in result.configured_models():
+            for model in result.all_models():
                 self._copy_model_fields(
                     latest,
                     result,
@@ -538,7 +553,7 @@ class ProviderManagerPersistenceMixin(
                 logger.warning(
                     f"Failed to get default models for {provider_id}: {exc}",
                 )
-        provider_info = ProviderInfo(
+        provider_info = provider_class(
             id=provider_id,
             name=label,
             base_url=base_url,
@@ -547,6 +562,11 @@ class ProviderManagerPersistenceMixin(
             models=default_models,
             is_custom=False,
             require_api_key=metadata.get("require_api_key", True),
+            is_local=metadata.get("is_local", False),
+            support_model_discovery=metadata.get(
+                "support_model_discovery",
+                False,
+            ),
             meta=metadata.get("meta", {}),
         )
         if saved_config_path.exists():
@@ -558,32 +578,9 @@ class ProviderManagerPersistenceMixin(
                     snapshot,
                     PROVIDER_SECRET_FIELDS,
                 )
-                for field in (
-                    "api_key",
-                    "base_url",
-                    "generate_kwargs",
-                    "custom_headers",
-                    "auth_mode",
-                    "hidden_model_ids",
-                    "removed_model_ids",
-                ):
-                    if field in saved_config:
-                        setattr(provider_info, field, saved_config[field])
-                for field in ("extra_models", "discovered_models"):
-                    if field in saved_config:
-                        setattr(
-                            provider_info,
-                            field,
-                            [
-                                ModelInfo.model_validate(model)
-                                for model in saved_config[field]
-                            ],
-                        )
-                provider_info.models_last_synced_at = saved_config.get(
-                    "models_last_synced_at",
-                )
-                provider_info.models_last_sync_error = saved_config.get(
-                    "models_last_sync_error",
+                self._restore_provider_config(
+                    provider_info,
+                    provider_class.model_validate(saved_config),
                 )
                 if snapshot_migrated:
                     provider_persistence.write_snapshot_payload(
@@ -842,6 +839,14 @@ class ProviderManagerPersistenceMixin(
         provider_id = str(data.get("id", ""))
         chat_model = str(data.get("chat_model", ""))
 
+        builtin = self.builtin_providers.get(provider_id)
+        if (
+            builtin is not None
+            and not data.get(f"is_custom")
+            and chat_model == builtin.chat_model
+        ):
+            return type(builtin).model_validate(data)
+
         if provider_id == "openrouter":
             provider_type = OpenRouterProvider
         elif provider_id == "anthropic" or chat_model == "AnthropicChatModel":
@@ -860,9 +865,44 @@ class ProviderManagerPersistenceMixin(
         apply_custom_discovery_policy(provider)
         return provider
 
-    def save_active_model(self, active_model: ModelSlotConfig):
+    async def clear_invalid_default_models(
+        self,
+        provider_id: str,
+        provider: Provider | None,
+    ) -> None:
+        for model_type, slot in self.default_models.items():
+            if (
+                slot is None
+                or self._normalize_provider_id(slot.provider_id) != provider_id
+            ):
+                continue
+            model = provider.get_model_info(slot.model) if provider else None
+            if (
+                not provider
+                or not provider.enabled
+                or not model
+                or model.model_type != model_type
+            ):
+                await self.clear_active_model_async(
+                    provider_id,
+                    model_type=model_type,
+                )
+
+    def _default_model_path(self, model_type: ModelType) -> Path:
+        filename = (
+            "active_model.json"
+            if model_type == "chat"
+            else f"default_{model_type}_model.json"
+        )
+        return self.root_path / filename
+
+    def save_active_model(
+        self,
+        active_model: ModelSlotConfig,
+        model_type: ModelType = "chat",
+    ):
         """Atomically save the active provider/model configuration."""
-        active_path = self.root_path / "active_model.json"
+        active_path = self._default_model_path(model_type)
         fd, temp_name = tempfile.mkstemp(
             prefix=".active_model.",
             suffix=".tmp",
@@ -897,55 +937,65 @@ class ProviderManagerPersistenceMixin(
     async def save_active_model_async(
         self,
         active_model: ModelSlotConfig,
+        model_type: ModelType = "chat",
     ) -> None:
         """Persist and commit the active model as one transaction."""
         lock = self._provider_save_locks.setdefault(
-            "__active_model__",
+            f"__default_model_{model_type}__",
             asyncio.Lock(),
         )
         snapshot = active_model.model_copy(deep=True)
 
         async def save_and_commit() -> None:
             async with lock:
-                await run_sync_io(self.save_active_model, snapshot)
-                self.active_model = snapshot
+                await run_sync_io(self.save_active_model, snapshot, model_type)
+                self.default_models[model_type] = snapshot
 
         await run_async_to_completion(save_and_commit())
 
     async def clear_active_model_async(
         self,
         provider_id: str | None = None,
+        *,
+        model_type: ModelType = "chat",
+        model_id: str | None = None,
     ) -> bool:
         """Clear the active model without blocking the event loop."""
         if provider_id is not None:
             provider_id = self._normalize_provider_id(provider_id)
         lock = self._provider_save_locks.setdefault(
-            "__active_model__",
+            f"__default_model_{model_type}__",
             asyncio.Lock(),
         )
 
         async def clear_model() -> bool:
             async with lock:
-                if self.active_model is None:
+                slot = self.default_models[model_type]
+                if slot is None:
                     return False
                 if (
                     provider_id is not None
                     and self._normalize_provider_id(
-                        self.active_model.provider_id,
+                        slot.provider_id,
                     )
                     != provider_id
                 ):
                     return False
-                active_path = self.root_path / "active_model.json"
+                if model_id is not None and slot.model != model_id:
+                    return False
+                active_path = self._default_model_path(model_type)
                 await run_sync_io(active_path.unlink, missing_ok=True)
-                self.active_model = None
+                self.default_models[model_type] = None
                 return True
 
         return await run_async_to_completion(clear_model())
 
-    def load_active_model(self) -> ModelSlotConfig | None:
+    def load_active_model(
+        self,
+        model_type: ModelType = "chat",
+    ) -> ModelSlotConfig | None:
         """Load the active provider/model configuration from disk."""
-        active_path = self.root_path / "active_model.json"
+        active_path = self._default_model_path(model_type)
         if not active_path.exists():
             return None
         try:
@@ -956,56 +1006,60 @@ class ProviderManagerPersistenceMixin(
             return None
 
     def _migrate_copaw_config(self) -> None:
-        """Migrate copaw-local provider config to qwenpaw-local."""
-        # 1. Migrate active model configuration (only provider_id)
-        if (
-            self.active_model
-            and self.active_model.provider_id == "copaw-local"
-        ):
-            self.active_model.provider_id = "qwenpaw-local"
-            self.save_active_model(self.active_model)
-            logger.info(
-                "Migrated active model provider from "
-                "'copaw-local' to 'qwenpaw-local'",
-            )
-
-        # 2. Migrate stored provider config file
-        copaw_config_path = self.builtin_path / "copaw-local.json"
-        if not copaw_config_path.exists():
-            return
+        """Keep legacy model selections and move local provider settings."""
+        for model_type, slot in self.default_models.items():
+            if slot is not None and slot.provider_id == "copaw-local":
+                slot.provider_id = "qwenpaw-local"
+                self.save_active_model(slot, model_type=model_type)
 
         try:
-            # Load old config and apply to new provider instance
-            with open(copaw_config_path, "r", encoding="utf-8") as f:
-                old_config = json.load(f)
+            self._migrate_local_provider_snapshots()
+        except (OSError, ValueError, TypeError):
+            logger.exception("Could not migrate local provider settings")
 
-            # Get the new built-in provider instance
-            provider = self.builtin_providers.get("qwenpaw-local")
-            if not provider:
+    def _migrate_local_provider_snapshots(self) -> None:
+        sources = [
+            source
+            for name in ("qwenpaw-local", "copaw-local")
+            if (source := self.builtin_path / f"{name}.json").is_file()
+        ]
+        if not sources:
+            return
+
+        target = self.plugin_path / "qwenpaw-local.json"
+        with get_sync_path_lock(target):
+            if target.exists():
                 return
 
-            # Apply migrated configuration (preserve extra_models as-is)
-            if "extra_models" in old_config:
-                provider.extra_models = [
-                    ModelInfo.model_validate(model)
-                    for model in old_config["extra_models"]
-                ]
-            if "base_url" in old_config:
-                provider.base_url = old_config["base_url"]
-            if "generate_kwargs" in old_config:
-                provider.generate_kwargs = old_config["generate_kwargs"]
+            payload: dict[str, Any] = {}
+            migrated = []
+            # The legacy CoPaw settings take precedence when both exist.
+            for source in sources:
+                try:
+                    snapshot = json.loads(source.read_text(encoding="utf-8"))
+                    if not isinstance(snapshot, dict):
+                        raise ValueError("Provider snapshot must be an object")
+                    migrate_provider_snapshot(snapshot)
+                    merged = {**payload, **snapshot, "id": "qwenpaw-local"}
+                    merged.setdefault("name", _LEGACY_LOCAL_PROVIDER_NAME)
+                    OpenAIProvider.model_validate(merged)
+                except (OSError, ValueError, TypeError):
+                    logger.exception(
+                        "Could not migrate local provider snapshot %s",
+                        source,
+                    )
+                    continue
+                payload = merged
+                migrated.append(source)
 
-            # Save using standard persistence logic (with encryption)
-            self._save_provider(provider, is_builtin=True)
-
-            # Remove old config file
-            copaw_config_path.unlink()
-            logger.info(
-                "Migrated provider config from "
-                "'copaw-local.json' to 'qwenpaw-local.json'",
+            if not migrated:
+                return
+            provider_persistence.write_snapshot_payload(
+                encrypt_dict_fields(payload, PROVIDER_SECRET_FIELDS),
+                target,
             )
-        except Exception as exc:
-            logger.warning("Failed to migrate copaw-local config: %s", exc)
+            for source in migrated:
+                source.unlink()
 
     def _migrate_legacy_providers(self):
         """Migrate from legacy providers.json format to the new structure."""
@@ -1021,7 +1075,33 @@ class ProviderManagerPersistenceMixin(
             active_model = legacy_data.get("active_llm", {})
             # Migrate built-in providers
             for provider_id, config in builtin_providers.items():
+                if provider_id in {"qwenpaw-local", "copaw-local"}:
+                    target = self.plugin_path / "qwenpaw-local.json"
+                    with get_sync_path_lock(target):
+                        if not target.exists():
+                            provider = OpenAIProvider(
+                                **{
+                                    "name": _LEGACY_LOCAL_PROVIDER_NAME,
+                                    "is_local": True,
+                                    "require_api_key": False,
+                                    **config,
+                                    "id": "qwenpaw-local",
+                                },
+                            )
+                            provider_persistence.write_provider_snapshot(
+                                provider,
+                                target,
+                            )
+                    continue
                 provider = self.get_provider(provider_id)
+                if provider is None and provider_id == f"github-models":
+                    provider = OpenAIProvider(
+                        id=provider_id,
+                        name=f"GitHub Models",
+                        base_url=f"https://models.github.ai/inference",
+                        is_custom=True,
+                    )
+                    self.custom_providers[provider_id] = provider
                 if not provider:
                     logger.warning(
                         "Legacy provider '%s' not found in"
@@ -1038,7 +1118,10 @@ class ProviderManagerPersistenceMixin(
                     ]
                 if not provider.freeze_url and "base_url" in config:
                     provider.base_url = config["base_url"]
-                self._save_provider(provider, is_builtin=True)
+                self._save_provider(
+                    provider,
+                    is_builtin=not provider.is_custom,
+                )
             self._migrate_legacy_custom_providers(custom_providers)
             self._migrate_legacy_active_model(active_model)
             # Remove legacy file after migration
@@ -1082,12 +1165,30 @@ class ProviderManagerPersistenceMixin(
                 "Failed to migrate active model, using default.",
             )
 
+    def _migrate_github_models(self) -> None:
+        """Move an existing retired builtin to custom storage once."""
+        provider_id = f"github-models"
+        source = self._provider_path_for_kind(f"builtin", provider_id)
+        target = self._provider_path_for_kind(f"custom", provider_id)
+        if not source.exists():
+            return
+        if target.exists():
+            return
+        provider = self.load_provider(provider_id, is_builtin=True)
+        if provider is None:
+            return
+        provider.is_custom = True
+        provider.freeze_url = False
+        self._save_provider(provider, is_builtin=False, skip_if_exists=False)
+        source.unlink()
+
     def _init_from_storage(self):
         """Initialize all providers and active model from disk storage."""
         for builtin in self.builtin_providers.values():
             provider = self.load_provider(builtin.id, is_builtin=True)
             if provider:
-                self._restore_builtin_provider(builtin, provider)
+                self._restore_provider_config(builtin, provider)
+        self._migrate_github_models()
         # Load custom providers
         provider_files = sorted(
             self.custom_path.glob("*.json"),
@@ -1112,69 +1213,64 @@ class ProviderManagerPersistenceMixin(
                     continue
                 self.custom_providers[provider_key] = provider
         # Load active model config
-        active_model = self.load_active_model()
-        if active_model:
-            self.active_model = active_model
+        for model_type in self.default_models:
+            self.default_models[model_type] = self.load_active_model(
+                model_type,
+            )
 
         # Migrate copaw-local to qwenpaw-local for backwards compatibility
         self._migrate_copaw_config()
 
     @staticmethod
-    def _restore_builtin_provider(
-        builtin: Provider,
-        provider: Provider,
+    def _restore_provider_config(
+        declared: ProviderInfo,
+        provider: ProviderInfo,
     ) -> None:
-        """Restore persisted configuration onto a built-in provider."""
-        if not builtin.freeze_url:
-            builtin.base_url = provider.base_url
-        builtin.api_key = provider.api_key
+        """Restore saved settings and retain declared provider metadata."""
+        if not declared.freeze_url:
+            declared.base_url = provider.base_url
+        if f"enabled" in provider.model_fields_set:
+            declared.enabled = provider.enabled
+        declared.api_key = provider.api_key
         if provider.auth_mode != "api_key":
-            builtin.auth_mode = provider.auth_mode
+            declared.auth_mode = provider.auth_mode
         if provider.custom_headers:
-            builtin.custom_headers = provider.custom_headers
-        if hasattr(builtin, "max_inline_media_bytes"):
-            builtin.max_inline_media_bytes = provider.max_inline_media_bytes
+            declared.custom_headers = provider.custom_headers
+        if hasattr(declared, "max_inline_media_bytes"):
+            declared.max_inline_media_bytes = provider.max_inline_media_bytes
 
-        builtin_model_ids = {model.id for model in builtin.models}
-        unavailable_model_ids = getattr(
-            builtin,
-            "_UNAVAILABLE_MODEL_IDS",
-            frozenset(),
-        )
-        builtin.extra_models = [
+        declared_model_ids = {model.id for model in declared.models}
+        declared.extra_models = [
             model
             for model in provider.extra_models
-            if model.id not in builtin_model_ids
-            and model.id not in unavailable_model_ids
+            + [item for item in provider.models if item.source == f"user"]
+            if model.id not in declared_model_ids
         ]
-        builtin.discovered_models = [
-            model
-            for model in provider.discovered_models
-            if model.id not in unavailable_model_ids
-        ]
-        builtin.models_last_synced_at = provider.models_last_synced_at
-        builtin.models_last_sync_error = provider.models_last_sync_error
-        builtin.models_syncing = False
-        builtin.hidden_model_ids = list(provider.hidden_model_ids)
-        builtin.removed_model_ids = list(provider.removed_model_ids)
-        builtin.generate_kwargs.update(provider.generate_kwargs)
+        declared.discovered_models = list(provider.discovered_models)
+        declared.models_last_synced_at = provider.models_last_synced_at
+        declared.models_last_sync_error = provider.models_last_sync_error
+        declared.models_syncing = False
+        declared.seen_model_ids = list(provider.seen_model_ids)
+        declared.hidden_model_ids = list(provider.hidden_model_ids)
+        declared.removed_model_ids = list(provider.removed_model_ids)
+        declared.generate_kwargs.update(provider.generate_kwargs)
 
         # Catalog model metadata is authoritative. Persisted model state can
         # contain an older is_free value from before the catalog was updated.
         catalog_free_flags = {
-            model.id: model.is_free for model in builtin.models
+            model.id: model.is_free for model in declared.models
         }
 
         stored_model_config = {
             model.id: serialize_model_state(model) for model in provider.models
         }
         for model in provider.extra_models:
-            if model.id in builtin_model_ids:
+            if model.id in declared_model_ids:
                 stored_model_config.setdefault(
                     model.id,
                     serialize_model_state(model),
                 )
-        for model in builtin.models:
+        for model in declared.models:
             config = stored_model_config.get(model.id)
             if config:
                 restore_model_state(model, config)

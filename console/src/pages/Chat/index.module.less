@@ -9,6 +9,11 @@
   overflow: hidden;
 
   :global {
+    // The SDK renders raw user text with an inline 14px font size.
+    [data-role="user"] [class$="-markdown"] {
+      font-size: var(--app-font-body) !important;
+    }
+
     [class$="-bubble-files-download"] {
       opacity: 1 !important;
       background: transparent !important;
@@ -19,13 +24,112 @@
     }
 
     [class$="-sender-content-bottom"] {
+      container-type: inline-size;
       align-items: center;
-      column-gap: 8px;
+      flex-wrap: wrap;
+      row-gap: 8px;
+      column-gap: 6px;
+      font-size: var(--app-font-caption);
+
+      :where(
+          button,
+          input,
+          .ant-select-selection-item,
+          .qwenpaw-select-selection-item
+        ) {
+        font-size: inherit !important;
+      }
+    }
+
+    textarea[data-sender-input="true"] {
+      font-size: var(--app-font-body) !important;
+      line-height: 1.5 !important;
+    }
+
+    [class$="-welcome-prompts-greeting"] {
+      font-size: var(--app-font-subtitle) !important;
+      line-height: 1.35 !important;
+    }
+
+    [class$="-welcome-prompts-description"],
+    [class$="-disclaimer"],
+    [class$="-sender-actions-list-length"] {
+      font-size: var(--app-font-caption) !important;
+      line-height: 1.4 !important;
+    }
+
+    [class$="-welcome-prompts-prompt-label"],
+    .qwenpaw-welcome-prompts-prompt-label {
+      font-size: var(--app-font-body) !important;
+      line-height: 1.4 !important;
+    }
+
+    [class$="-sender-actions-list-length"],
+    [class$="-sender-actions-list-presets"] {
+      flex: 0 0 auto;
+      white-space: nowrap;
     }
 
     [class$="-sender-actions-list"] {
       align-items: center;
-      column-gap: 8px;
+      justify-content: flex-end;
+      column-gap: 6px;
+      min-width: 0;
+      max-width: 100%;
+      flex: 1 0 max-content;
+      flex-wrap: nowrap;
+      row-gap: 8px;
+    }
+
+    // Use the prefix's content width when deciding whether actions fit.
+    [class$="-sender-prefix"] {
+      width: auto;
+      flex: 1 0 max-content;
+      min-width: max-content;
+      max-width: 100%;
+      overflow: visible;
+
+      > div {
+        flex-wrap: nowrap;
+        min-width: 0;
+      }
+    }
+
+    [class$="-sender-prefix"] button,
+    [class$="-sender-actions-list"] button,
+    [class$="-sender-actions-btn"] {
+      min-height: var(--app-icon-button);
+    }
+
+    [class$="-sender-prefix"] button svg,
+    [class$="-sender-actions-list"] button svg,
+    [class$="-sender-actions-btn"] svg {
+      width: var(--app-icon-default);
+      height: var(--app-icon-default);
+    }
+
+    // The SDK stop square occupies only a quarter of its SVG canvas.
+    [class$="-sender-actions-btn-loading-icon"] rect {
+      transform-box: fill-box;
+      transform-origin: center;
+      transform: scale(2);
+    }
+
+    [class$="-sender-prefix"] button [data-spark-icon],
+    [class$="-sender-actions-list"] button [data-spark-icon],
+    [class$="-sender-actions-btn"] [data-spark-icon] {
+      font-size: var(--app-icon-default) !important;
+    }
+
+    [class$="-bubble-footer-actions"] button:has(svg) {
+      [data-spark-icon] {
+        font-size: var(--app-icon-sm) !important;
+      }
+
+      svg {
+        width: var(--app-icon-sm);
+        height: var(--app-icon-sm);
+      }
     }
   }
 }
@@ -40,51 +144,190 @@
   }
 }
 
-.filesWorkspaceOpen {
-  .chatMainArea {
-    :global {
-      [class$="-sender-content"] {
-        padding: 6px;
-      }
+.composerToolsToggle {
+  display: none;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: var(--app-icon-default);
+  cursor: pointer;
+}
 
-      [class$="-sender-content-bottom"] {
-        min-width: 0;
-        align-items: center;
-        column-gap: 4px;
-      }
+.chatPageRoot .chatMessagesArea :global([data-composer-overflow="true"]) {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 0;
 
-      [class$="-sender-prefix"] {
-        min-width: 0;
-        overflow: hidden;
-      }
+  :global([class$="-sender-actions-list"]) {
+    display: contents;
+  }
 
-      [class$="-sender-actions-list"] {
-        min-width: 0;
-        align-items: center;
-        column-gap: 4px;
-      }
+  // Keep the original action anchors at the + button for their popovers,
+  // without exposing a second toolbar or changing its component state.
+  :global([class$="-sender-prefix"]),
+  .senderActionAffix {
+    position: absolute;
+    inset-inline-start: 0;
+    bottom: 0;
+    width: 36px;
+    height: 36px;
+    min-width: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
 
-      [class$="-sender-actions-list-length"] {
-        display: none;
-      }
+  :global([class$="-sender-prefix"]) > div > *,
+  .senderActionAffix > * {
+    position: absolute;
+    inset-inline-start: 0;
+    bottom: 0;
+  }
 
-      [class$="-sender-actions-list-presets"] {
-        flex: 0 0 auto;
-      }
+  :global([class$="-sender-actions-list-length"]) {
+    display: none;
+  }
+
+  .composerToolsToggle {
+    display: inline-flex;
+    grid-row: 1;
+    grid-column: 1;
+    justify-self: start;
+  }
+
+  // Ant Design appends Flex classes after the SDK's presets class.
+  :global([class~="qwenpaw-sender-actions-list-presets"]) {
+    grid-row: 1;
+    grid-column: 2;
+    justify-self: end;
+  }
+}
+
+.composerResponsiveItem {
+  --composer-compact-width: 32px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  min-height: var(--composer-compact-width);
+  align-items: center;
+  container: composer-control / inline-size;
+  button {
+    padding-inline: 5px !important;
+    justify-content: flex-start !important;
+    transition-property: color, background-color, border-color, opacity !important;
+    > * {
+      flex-shrink: 0 !important;
+    }
+  }
+
+  &[data-composer-resizing="true"] {
+    overflow: hidden;
+
+    > span {
+      width: 100%;
+      min-width: 0 !important;
+      max-width: 100%;
+      flex: none;
+    }
+
+    button {
+      width: 100% !important;
+      min-width: 0 !important;
+      flex: none !important;
+      box-sizing: border-box;
+      overflow: hidden;
+      justify-content: flex-start !important;
+      white-space: nowrap;
+    }
+  }
+
+  :global([data-composer-collapse-content]) {
+    max-width: none !important;
+    opacity: 1;
+    visibility: visible;
+    transition: none;
+    white-space: nowrap;
+  }
+
+  @container composer-control (max-width: 32px) {
+    :global([data-composer-collapse-content]) {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
     }
   }
 }
 
-.compactSenderAffix {
-  min-width: 0;
-  flex: 0 1 auto;
-  gap: 4px;
+.chatMessagesArea :global {
+  [class*="-sender-actions-list-presets"] {
+    margin-left: 0;
+  }
+}
+
+.composerMeasurement {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+
+  :global {
+    [class$="-sender-content-bottom"] {
+      container-type: normal !important;
+      flex-wrap: nowrap !important;
+      width: max-content !important;
+      max-width: none !important;
+    }
+
+    [class$="-sender-prefix"],
+    [class$="-sender-actions-list"] {
+      flex-basis: auto !important;
+      width: auto !important;
+      max-width: none !important;
+    }
+  }
+
+  .composerResponsiveItem {
+    container-type: normal;
+  }
+
+  .composerResponsiveItem,
+  .composerResponsiveItem *,
+  .composerResponsiveItem :global(*) {
+    transition: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composerResponsiveItem,
+  .composerResponsiveItem *,
+  .composerResponsiveItem :global(*) {
+    transition: none !important;
+  }
 }
 
 .senderActionAffix {
   display: inline-flex;
+  flex-wrap: nowrap;
+  min-width: 0;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+
+  > * {
+    min-width: 0;
+    flex: 0 1 auto;
+  }
+}
+
+.senderActionAffix > .composerResponsiveItem {
+  flex: 0 0 auto;
 }
 
 .senderContextAffix {
@@ -92,6 +335,25 @@
   min-width: 0;
   flex: 0 0 auto;
   align-items: center;
+}
+
+/* Desktop sender controls share one height and reserve space for their labels.
+ * The project control may give back width; approval stays on one line. */
+.senderProjectControl,
+.senderApprovalControl {
+  box-sizing: border-box;
+  min-height: max(34px, calc(34px * var(--app-font-scale))) !important;
+  white-space: nowrap !important;
+}
+
+.senderProjectControl {
+  min-width: 0;
+  max-width: none;
+  flex: 1 1 150px !important;
+}
+
+.senderApprovalControl {
+  flex: 0 0 auto !important;
 }
 
 @media (max-width: 1024px) {
@@ -279,7 +541,7 @@
     [class$="-sender-actions-list"] {
       min-width: 0;
       max-width: 100%;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       column-gap: 4px;
     }
   }
@@ -310,17 +572,17 @@
     }
 
     [class$="-sender-content-bottom"] {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
+      display: flex;
       align-items: center;
       column-gap: 8px;
+      row-gap: 4px;
       margin-top: 8px;
     }
 
     [class$="-sender-prefix"] {
       width: auto;
       min-width: 0;
-      flex: 1 1 auto;
+      flex: 1 0 auto;
       overflow-x: auto;
       overflow-y: hidden;
       overscroll-behavior-x: contain;
@@ -333,15 +595,13 @@
     }
 
     [class$="-sender-prefix"] > [class*="flex"] {
-      width: 100%;
+      width: max-content;
       min-width: 0;
       gap: 4px !important;
       overflow: visible;
     }
 
     [class$="-sender-prefix"] button {
-      min-width: 44px;
-      min-height: 44px;
       flex: 0 0 auto;
     }
 
@@ -352,18 +612,11 @@
       flex-wrap: nowrap;
       align-items: center;
       column-gap: 4px;
-      margin-left: auto;
+      margin-left: 0;
     }
 
     [class$="-sender-actions-list-presets"] {
       flex: 0 0 auto;
-    }
-
-    [class$="-sender-actions-btn"] {
-      width: 44px !important;
-      min-width: 44px !important;
-      height: 44px !important;
-      border-radius: 12px !important;
     }
   }
 
@@ -393,68 +646,6 @@
     [class$="-sender-actions-list-length"] {
       display: none;
     }
-  }
-
-  .senderContextAffix {
-    display: none;
-  }
-}
-
-/* Mobile composer controls share one quiet visual treatment. Their component
- * compact variants remove labels and chevrons from the rendered structure. */
-.mobileComposerControl {
-  width: 44px !important;
-  max-width: 44px !important;
-  min-width: 44px !important;
-  height: 44px !important;
-  flex: 0 0 44px;
-  padding: 0 !important;
-  margin-inline-end: 0 !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  gap: 0 !important;
-  border: 0 !important;
-  border-radius: 10px !important;
-  background: transparent !important;
-  box-shadow: none !important;
-  line-height: 1 !important;
-  touch-action: manipulation;
-  transition:
-    background-color 160ms ease,
-    color 160ms ease !important;
-
-  > svg {
-    width: 18px;
-    height: 18px;
-    flex: 0 0 18px;
-  }
-
-  &:hover,
-  &:active,
-  &[aria-expanded="true"] {
-    background: var(--app-fill-subtle) !important;
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--app-accent-border);
-    outline-offset: 1px;
-  }
-
-  &[data-state] {
-    pointer-events: none;
-  }
-
-  &[data-state="starting"] {
-    color: var(--app-accent) !important;
-  }
-
-  &[data-state="running"] {
-    color: var(--app-success) !important;
-  }
-
-  &[data-state="awaiting_user"] {
-    color: var(--app-warning) !important;
   }
 }
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import io
 import json
@@ -11,7 +12,9 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
+import uuid
 import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -23,8 +26,9 @@ from typing import Any, TypeVar
 import frontmatter
 import yaml
 
-from ...exceptions import SkillsError
+from ...exceptions import SkillImportCancelled, SkillsError
 from ...security.skill_scanner import scan_skill_directory
+from ...utils.io_utils import rename_or_copy_directory
 from ..utils.file_handling import (
     read_text_file_with_encoding_fallback,
     single_line_log_value,
@@ -50,6 +54,11 @@ logger = logging.getLogger(__name__)
 
 _RegistryResult = TypeVar("_RegistryResult")
 _MAX_ZIP_BYTES = 200 * 1024 * 1024
+# Temp-dir prefixes for staged skill writes. Both are fixed strings: the skill
+# name is never interpolated into a path here, so no user input can influence
+# where the staging directory lands (path-injection hardening).
+_SKILL_STAGE_PREFIX = "qwenpaw_skill_stage_"
+_SKILL_IMPORT_STAGE_PREFIX = ".skill-import-"
 _REQUIREMENTS_METADATA_NAMESPACES = ("openclaw", "qwenpaw", "clawdbot")
 _FRONTMATTER_ENCODINGS = (
     "utf-8-sig",
@@ -389,24 +398,196 @@ _IGNORED_SKILL_ARTIFACTS = {
 }
 
 
+# Cancel checker (callable returning bool), propagated by contextvar so
+# nested operations each carry their own checker without interference. It
+# lives beside the copy it guards because this module is the leaf: both the
+# hub installer and the pool download can share one mechanism from here.
+_cancel_checker_ctx: contextvars.ContextVar[
+    Callable[[], bool] | None
+] = contextvars.ContextVar("skills_cancel_checker", default=None)
+
+
+def ensure_not_cancelled() -> None:
+    """Raise ``SkillImportCancelled`` if the armed checker says cancelled.
+
+    Unarmed is the default, and then this does nothing, so every caller that
+    does not opt in behaves exactly as it did before. A checker that itself
+    fails is ignored: a broken cancellation channel must not fail a copy that
+    is otherwise fine.
+    """
+    checker = _cancel_checker_ctx.get()
+    if checker is None:
+        return
+    try:
+        cancelled = bool(checker())
+    except Exception:
+        return
+    if cancelled:
+        raise SkillImportCancelled("Skill import cancelled by user")
+
+
+@contextmanager
+def with_cancel_checker(checker: Callable[[], bool] | None):
+    """Arm *checker* for the duration of the ``with`` block."""
+    token = _cancel_checker_ctx.set(checker)
+    try:
+        yield
+    finally:
+        _cancel_checker_ctx.reset(token)
+
+
 def copy_skill_dir(source: Path, target: Path) -> None:
     """Replace *target* with a copy of *source*.
 
     We intentionally filter only well-known OS/cache artifacts so skill
     content behaves consistently on macOS, Windows, Linux, and Docker.
     User-authored dotfiles are preserved.
+
+    Cancellation is checked between whole files, so it never leaves a
+    half-written file behind: the copy fails exactly like any other mid-copy
+    error, and the caller's existing rollback owns the cleanup.
     """
+    ensure_not_cancelled()
+
     if target.exists():
         shutil.rmtree(target)
 
     def _ignore(_dir: str, names: list[str]) -> set[str]:
         return {name for name in names if name in _IGNORED_SKILL_ARTIFACTS}
 
+    def _checked_copy2(src: str, dst: str) -> None:
+        """Per-file hook: ``copytree`` calls this once per regular file."""
+        ensure_not_cancelled()
+        shutil.copy2(src, dst)
+
     shutil.copytree(
         source,
         target,
         ignore=_ignore,
+        copy_function=_checked_copy2,
     )
+
+
+_RETIRED_MARK = ".retired-"
+ROLLBACK_ROOT_PREFIX = ".qwenpaw_skill_rollback_"
+
+
+def is_installer_owned_skills_entry(name: str) -> bool:
+    """Whether *name* is a directory the installer owns inside ``skills/``.
+
+    Two kinds sit beside the skills themselves: a retired tree left behind by
+    an overwrite (``.<skill>.retired-<hex>``) and a rollback backup root
+    (``.qwenpaw_skill_rollback_<id>``). Both can vanish at any moment while
+    the installer reclaims them, so a copy that walks the skills root has to
+    skip them: reading one mid-deletion fails a copy that has nothing to do
+    with the install.
+    """
+    if not name.startswith("."):
+        return False
+    return _RETIRED_MARK in name or name.startswith(ROLLBACK_ROOT_PREFIX)
+
+
+def _retired_path_for(target_dir: Path) -> Path:
+    """A hidden sibling name that stands in for the previous skill tree."""
+    return target_dir.parent / (
+        f".{target_dir.name}{_RETIRED_MARK}{uuid.uuid4().hex}"
+    )
+
+
+def _reclaim_retired_tree(retired_dir: Path) -> None:
+    """Delete a retired tree without making the caller wait for it.
+
+    ``rmtree`` cannot be interrupted, so removing a large tree inline is what
+    made cancelling an overwrite take seconds. The tree is already out of the
+    way — a dotted sibling name that ``is_ignored_skill_entry`` skips — so the
+    removal is pure cleanup and runs on a daemon thread.
+
+    Failing to start that thread is not an install failure: the tree is
+    already out of the way, so it is left in place, its path is logged, and
+    the caller carries on (a manifest write follows the install).
+    """
+
+    def _remove() -> None:
+        shutil.rmtree(retired_dir, ignore_errors=True)
+
+    try:
+        threading.Thread(
+            target=_remove,
+            name="skill-reclaim",
+            daemon=True,
+        ).start()
+    except RuntimeError:
+        logger.warning(
+            "Could not start cleanup of the retired tree %s; leaving it in "
+            "place",
+            retired_dir,
+            exc_info=True,
+        )
+
+
+def install_staged_skill_dir(staged_dir: Path, target_dir: Path) -> None:
+    """Install an already-scanned staged skill at *target_dir*.
+
+    A rename replaces the second full copy of a large skill with one directory
+    operation; a refused rename falls back to ``copy_skill_dir`` unchanged. An
+    interrupted install can leave *target_dir* absent, which the caller's
+    rollback restores.
+
+    The stage must already be clean: renaming is only equivalent to
+    ``copy_skill_dir`` when that function produced it, because its artifact
+    filtering and symlink dereferencing happen during a copy, not a rename.
+
+    An existing target is moved aside and reclaimed afterwards rather than
+    deleted in place, so cancelling an overwrite does not wait for the old
+    tree. If the install fails, the moved-aside tree is moved back; if that
+    move also fails it is kept, being then the only copy left.
+
+    A tree left aside by a run that was killed is *not* reclaimed here or on
+    any later install. Its name records how the directory was created, not
+    whether its contents are safe to drop: between moving the previous tree
+    aside and renaming the new one into place, that tree is the only copy of
+    the skill. A successful install cleans up the tree it retired itself.
+    """
+    ensure_not_cancelled()
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    retired_dir: Path | None = None
+    if target_dir.exists():
+        retired_dir = _retired_path_for(target_dir)
+        try:
+            os.replace(target_dir, retired_dir)
+        except OSError:  # a handle on the old tree: fall back to deleting it
+            retired_dir = None
+            shutil.rmtree(target_dir)
+    try:
+        rename_or_copy_directory(
+            staged_dir,
+            target_dir,
+            copy_directory=copy_skill_dir,
+        )
+    except BaseException:
+        if retired_dir is not None:
+            try:
+                # A failed copy can leave a partial target behind; it has to
+                # go, otherwise the move back below cannot land.
+                if target_dir.exists():
+                    shutil.rmtree(target_dir)
+                os.replace(retired_dir, target_dir)
+            except OSError:
+                # The moved-aside tree is the only copy left, so it stays.
+                logger.warning(
+                    "Could not move %s back to %s; leaving it in place",
+                    retired_dir,
+                    target_dir,
+                    exc_info=True,
+                )
+            else:
+                retired_dir = None
+        raise
+    # Only now is the new tree in place. Reclaiming earlier would let an
+    # interrupted move-back delete the only recoverable copy, which is what
+    # the previous ``finally`` could do.
+    if retired_dir is not None:
+        _reclaim_retired_tree(retired_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -836,6 +1017,9 @@ def _create_files_from_tree(base_dir: Path, tree: dict[str, Any]) -> None:
         if isinstance(value, dict):
             path.mkdir(parents=True, exist_ok=True)
             _create_files_from_tree(path, value)
+        elif isinstance(value, bytes):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(value)
         elif value is None or isinstance(value, str):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(value or "", encoding="utf-8")
@@ -1229,7 +1413,7 @@ def import_skill_dir(
     if not post.get("name") or not post.get("description"):
         return False
 
-    target_dir = target_root / skill_name
+    target_dir = safe_skill_dir(target_root, skill_name)
     if target_dir.exists():
         return False
 
@@ -1240,10 +1424,13 @@ def import_skill_dir(
 
     target_root.mkdir(parents=True, exist_ok=True)
     stage_root = Path(
-        tempfile.mkdtemp(prefix=f".{skill_name}.import-", dir=target_root),
+        tempfile.mkdtemp(
+            prefix=_SKILL_IMPORT_STAGE_PREFIX,
+            dir=target_root,
+        ),
     )
-    stage_dir = stage_root / skill_name
     try:
+        stage_dir = safe_skill_dir(stage_root, skill_name)
         shutil.copytree(src_dir, stage_dir, ignore=_ignore)
         if pawport_owner is not None:
             (stage_dir / _PAWPORT_MARKER).write_text(
@@ -1363,12 +1550,76 @@ def scan_skill_dir_or_raise(skill_dir: Path, skill_name: str) -> None:
 
 @contextmanager
 def staged_skill_dir(skill_name: str) -> Iterator[Path]:
-    """Create a temporary skill directory used for staged writes."""
-    temp_root = Path(
-        tempfile.mkdtemp(prefix=f"qwenpaw_skill_stage_{skill_name}_"),
-    )
-    stage_dir = temp_root / skill_name
+    """Create a temporary skill directory used for staged writes.
+
+    The temp root uses a fixed prefix and the stage directory is resolved via
+    ``safe_skill_dir``, so a caller-supplied ``skill_name`` can never escape
+    the temp root (path-injection hardening).
+    """
+    temp_root = Path(tempfile.mkdtemp(prefix=_SKILL_STAGE_PREFIX))
     try:
-        yield stage_dir
+        yield safe_skill_dir(temp_root, skill_name)
     finally:
         shutil.rmtree(temp_root, ignore_errors=True)
+
+
+# A staged write touches its files continuously while it runs, so a stage dir
+# whose newest entry is older than this has no writer left: the process that
+# created it died mid-copy, or has simply been idle that long. Anything
+# fresher may still be written to — including by another QwenPaw instance
+# sharing the system temp dir — so it is left alone.
+_SKILL_STAGE_ORPHAN_GRACE_SECONDS = 24 * 60 * 60
+
+
+def _newest_entry_mtime(path: Path) -> float | None:
+    """Newest mtime anywhere under ``path`` (the directory included)."""
+    try:
+        newest = path.stat().st_mtime
+    except OSError:
+        return None
+    for root, dirs, files in os.walk(path, onerror=lambda _error: None):
+        for name in [*dirs, *files]:
+            try:
+                mtime = os.stat(os.path.join(root, name)).st_mtime
+            except OSError:
+                continue
+            if mtime > newest:
+                newest = mtime
+    return newest
+
+
+def cleanup_orphan_skill_stages(
+    *,
+    max_age_seconds: float = _SKILL_STAGE_ORPHAN_GRACE_SECONDS,
+) -> int:
+    """Remove staged skill directories left behind by a killed process.
+
+    ``staged_skill_dir`` removes its temp root in ``finally``, so a surviving
+    directory carrying that prefix came from a process that died mid-write —
+    or from an instance that is still writing right now. The two are told
+    apart by age: a directory is only removed once nothing inside it has been
+    touched for ``max_age_seconds``. Checking only the directory's own mtime
+    would be wrong, because copying files *into* the staged skill dir does not
+    bump the parent's mtime; the newest mtime in the whole tree is what
+    reflects a live writer. Returns the number of directories removed.
+    """
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    # Prefix must match the one used by ``staged_skill_dir`` above.
+    for path in Path(tempfile.gettempdir()).glob("qwenpaw_skill_stage_*"):
+        if not path.is_dir():
+            continue
+        newest = _newest_entry_mtime(path)
+        if newest is None or newest > cutoff:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+        if path.exists():
+            logger.warning(
+                "Failed to remove orphan skill staging dir %s",
+                path,
+            )
+            continue
+        removed += 1
+    if removed:
+        logger.info("Removed %d orphan skill staging dir(s)", removed)
+    return removed

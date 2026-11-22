@@ -10,6 +10,8 @@ from typing import List, Literal
 from pydantic import BaseModel, Field
 
 from .provider import ModelInfo, Provider
+from .model_metadata import provider_catalog_models
+from .model_sync import reconcile_models
 
 DiscoveryErrorKind = Literal[
     "authentication",
@@ -22,7 +24,24 @@ DiscoveryErrorKind = Literal[
     "configuration",
 ]
 
+# Explicit None in model_fields_set means "successful probe, clear stale
+# value" for these discovery fields. Failed probes omit the field so merge
+# keeps the previous value.
+#
+# Fetched models must not go through a model_dump()/model_validate()
+# round trip before merge. That would put every default None into
+# model_fields_set, so a failed probe would be treated as an explicit
+# clear. The current fetch-then-merge pipeline is safe because probed
+# models keep omitted fields unset.
+DISCOVERY_CLEARABLE_NONE_FIELDS = frozenset(
+    {
+        "max_input_length_auto_detected",
+    },
+)
+
 DISCOVERY_MODEL_FIELDS = (
+    "model_type",
+    f"released_at",
     "max_input_length_auto_detected",
     "max_output_length",
     "max_output_length_source",
@@ -32,6 +51,17 @@ DISCOVERY_MODEL_FIELDS = (
     "supports_video",
     "probe_source",
     "is_free",
+    f"pricing",
+    f"billing",
+    f"billing_source",
+    f"billing_checked_at",
+    f"supports_audio",
+    f"supports_tool_calling",
+    f"input_token_limit",
+    f"input_token_limit_source",
+    f"auto_enabled",
+    f"requires_paid_confirmation",
+    f"remote_missing",
 )
 
 
@@ -67,6 +97,18 @@ def merge_discovered_model(
         base is not None and base.max_output_length_source == "user"
     )
     for field in remote.model_fields_set:
+        value = getattr(remote, field)
+        if value is None:
+            # Successful discovery may explicitly clear stale API facts
+            # (e.g. Ollama show omitted num_ctx). Failed probes omit the
+            # field from model_fields_set so the previous value is kept.
+            if (
+                field in DISCOVERY_CLEARABLE_NONE_FIELDS
+                and base is not None
+                and field not in config_overrides
+            ):
+                payload[field] = None
+            continue
         if base is not None:
             if field in config_overrides:
                 continue
@@ -80,13 +122,19 @@ def merge_discovered_model(
                 "max_input_length_configured",
             }:
                 continue
-        payload[field] = getattr(remote, field)
+        payload[field] = value
     payload.update(
         {
             "id": remote.id,
             "name": remote.name or remote.id,
             "source": "discovered",
             "discovered_at": discovered_at,
+            f"billing_source": remote.billing_source,
+            f"billing_checked_at": (
+                discovered_at
+                if remote.billing_source == f"api"
+                else remote.billing_checked_at
+            ),
         },
     )
     if remote.max_output_length is not None and not user_output_capability:
@@ -102,22 +150,28 @@ def apply_discovery_metadata(
 ) -> None:
     """Apply API metadata to matching configured models."""
     fetched_by_id = {model.id: model for model in fetched}
-    for configured in provider.configured_models():
+    for configured in provider.all_models():
         remote = fetched_by_id.get(configured.id)
         if remote is None:
             continue
         overridden = set(configured.config_overrides)
         user_output_capability = configured.max_output_length_source == "user"
         for field in DISCOVERY_MODEL_FIELDS:
+            if field not in remote.model_fields_set:
+                continue
+            if field in overridden:
+                continue
             if (
-                field in remote.model_fields_set
-                and field not in overridden
-                and not (
-                    field.startswith("max_output_length")
-                    and user_output_capability
-                )
+                field.startswith("max_output_length")
+                and user_output_capability
             ):
-                setattr(configured, field, getattr(remote, field))
+                continue
+            value = getattr(remote, field)
+            if value is None:
+                if field in DISCOVERY_CLEARABLE_NONE_FIELDS:
+                    setattr(configured, field, None)
+                continue
+            setattr(configured, field, value)
         if (
             remote.max_output_length is not None
             and "max_output_length" not in overridden
@@ -137,8 +191,17 @@ def classify_discovery_error(
         r"\bstatus\s*[=:]\s*(\d{3})\b",
         normalized,
     )
-    status = int(status_match.group(1)) if status_match else None
-    if isinstance(exc, TimeoutError):
+    status = getattr(exc, f"status_code", None) or getattr(
+        getattr(exc, f"response", None),
+        f"status_code",
+        None,
+    )
+    if status is None and status_match:
+        status = int(status_match.group(1))
+    if (
+        isinstance(exc, TimeoutError)
+        or f"timeout" in type(exc).__name__.lower()
+    ):
         return "timeout"
     status_kinds: dict[int, DiscoveryErrorKind] = {
         401: "authentication",
@@ -158,3 +221,33 @@ def classify_discovery_error(
     if isinstance(exc, (ConnectionError, OSError)):
         return "network"
     return "provider_unavailable"
+
+
+def normalize_discovered_models(
+    provider: Provider,
+    fetched: list[ModelInfo],
+    synced_at: str,
+) -> tuple[list[ModelInfo], set[str]]:
+    """Merge API results with offline cards without recycling old API rows."""
+    removed = set(provider.removed_model_ids)
+    by_id = {}
+    for model in fetched:
+        if model.id in removed:
+            continue
+        card = merge_discovered_model(provider, model, synced_at)
+        card.discovery_origin = f"api"
+        by_id.setdefault(card.id, card)
+    api_ids = set(by_id)
+    if provider.merge_with_catalog:
+        catalog = provider_catalog_models(provider.id, provider.base_url)
+        for model in catalog + provider.models:
+            if model.id in removed:
+                continue
+            if model.id in api_ids:
+                by_id[model.id].discovery_origin = f"both"
+            elif model.id not in by_id:
+                card = model.model_copy(deep=True)
+                card.discovery_origin = f"catalog"
+                card.source = f"discovered"
+                by_id[card.id] = card
+    return reconcile_models(provider, list(by_id.values()), api_ids), api_ids

@@ -51,6 +51,7 @@ export interface FeishuConfig extends BaseChannelConfig {
   domain?: "feishu" | "lark";
   streaming_enabled?: boolean;
   share_session_in_group?: boolean;
+  auto_collapse_thinking?: boolean;
 }
 
 export interface QQConfig extends BaseChannelConfig {
@@ -58,6 +59,7 @@ export interface QQConfig extends BaseChannelConfig {
   client_secret: string;
   ack_message?: string;
   user_openid?: string;
+  streaming_enabled?: boolean;
 }
 
 export interface TelegramConfig extends BaseChannelConfig {
@@ -161,6 +163,7 @@ export interface XiaoYiConfig extends BaseChannelConfig {
   sk: string;
   agent_id: string;
   task_timeout_ms?: number;
+  streaming_enabled?: boolean;
 }
 
 export interface WeChatConfig extends BaseChannelConfig {

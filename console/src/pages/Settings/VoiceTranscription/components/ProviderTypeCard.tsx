@@ -1,9 +1,15 @@
-import { Card, Radio, Space, Alert } from "antd";
+import InlineHelp from "@/components/InlineHelp";
+import { PolicySelector } from "@/components/interaction/PolicySelector";
+import { MicOff, Cloud, Monitor } from "lucide-react";
+import { Card } from "antd";
+import { LocalWhisperCard } from "./LocalWhisperCard";
 import { useTranslation } from "react-i18next";
-import type { LocalWhisperStatus } from "../useVoiceTranscription";
+import type { LocalWhisperStatus } from "../../../../api/modules/agent";
 import styles from "../index.module.less";
 
 interface ProviderTypeCardProps {
+  onInstall?: () => void;
+  onEnable?: () => void;
   providerType: string;
   onProviderTypeChange: (value: string) => void;
   isLocalWhisper: boolean;
@@ -11,6 +17,8 @@ interface ProviderTypeCardProps {
 }
 
 export function ProviderTypeCard({
+  onInstall,
+  onEnable,
   providerType,
   onProviderTypeChange,
   isLocalWhisper,
@@ -22,66 +30,42 @@ export function ProviderTypeCard({
     <Card className={styles.card}>
       <h3 className={styles.cardTitle}>
         {t("voiceTranscription.providerTypeLabel")}
+        <InlineHelp>
+          {t("voiceTranscription.providerTypeDescription")}
+        </InlineHelp>
       </h3>
-      <p className={styles.cardDescription}>
-        {t("voiceTranscription.providerTypeDescription")}
-      </p>
-      <Radio.Group
+      <PolicySelector
+        label={t("voiceTranscription.providerTypeLabel")}
         value={providerType}
-        onChange={(e) => onProviderTypeChange(e.target.value)}
-      >
-        <Space direction="vertical" size="middle">
-          <Radio value="disabled">
-            <span className={styles.optionLabel}>
-              {t("voiceTranscription.providerTypeDisabled")}
-            </span>
-            <span className={styles.optionDescription}>
-              {t("voiceTranscription.providerTypeDisabledDesc")}
-            </span>
-          </Radio>
-          <Radio value="whisper_api">
-            <span className={styles.optionLabel}>
-              {t("voiceTranscription.providerTypeWhisperApi")}
-            </span>
-            <span className={styles.optionDescription}>
-              {t("voiceTranscription.providerTypeWhisperApiDesc")}
-            </span>
-          </Radio>
-          <Radio value="local_whisper">
-            <span className={styles.optionLabel}>
-              {t("voiceTranscription.providerTypeLocalWhisper")}
-            </span>
-            <span className={styles.optionDescription}>
-              {t("voiceTranscription.providerTypeLocalWhisperDesc")}
-            </span>
-          </Radio>
-        </Space>
-      </Radio.Group>
+        onChange={onProviderTypeChange}
+        options={[
+          {
+            value: "disabled",
+            label: t("voiceTranscription.providerTypeDisabled"),
+            description: t("voiceTranscription.providerTypeDisabledDesc"),
+            icon: <MicOff size={18} />,
+          },
+          {
+            value: "whisper_api",
+            label: t("voiceTranscription.providerTypeWhisperApi"),
+            description: t("voiceTranscription.providerTypeWhisperApiDesc"),
+            icon: <Cloud size={18} />,
+          },
+          {
+            value: "local_whisper",
+            label: t("voiceTranscription.providerTypeLocalWhisper"),
+            description: t("voiceTranscription.providerTypeLocalWhisperDesc"),
+            icon: <Monitor size={18} />,
+          },
+        ]}
+      />
 
       {isLocalWhisper && localWhisperStatus && (
-        <div style={{ marginTop: 12 }}>
-          {localWhisperStatus.available ? (
-            <Alert
-              type="success"
-              showIcon
-              message={t("voiceTranscription.localWhisperReady")}
-            />
-          ) : (
-            <Alert
-              type="warning"
-              showIcon
-              message={t("voiceTranscription.localWhisperMissing")}
-              description={t("voiceTranscription.localWhisperMissingDesc", {
-                ffmpeg: localWhisperStatus.ffmpeg_installed
-                  ? t("common.enabled")
-                  : t("common.disabled"),
-                whisper: localWhisperStatus.whisper_installed
-                  ? t("common.enabled")
-                  : t("common.disabled"),
-              })}
-            />
-          )}
-        </div>
+        <LocalWhisperCard
+          status={localWhisperStatus}
+          onInstall={onInstall}
+          onEnable={onEnable}
+        />
       )}
     </Card>
   );

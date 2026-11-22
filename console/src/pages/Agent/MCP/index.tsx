@@ -1,15 +1,33 @@
-import { useState, useCallback } from "react";
-import { Button, Empty, Modal, Input, Select } from "@agentscope-ai/design";
-import { Tabs } from "antd";
-import { LockKeyhole, Plus, Server } from "lucide-react";
+import { Cascade } from "@/components/interaction/Cascade";
+import { SharedModal as Modal } from "@/components/interaction/SharedModal";
+import { useState, useCallback, useLayoutEffect, useRef } from "react";
+import { Button, Empty, Input, Select } from "@agentscope-ai/design";
+import { Tabs, Alert, Segmented } from "antd";
+import InlineHelp from "@/components/InlineHelp";
+import { LockKeyhole, Plus, Server, Search } from "lucide-react";
 import type { MCPClientInfo } from "../../../api/types";
 import { MCPClientCard } from "./components";
 import { useMCP } from "./useMCP";
+import { useMCPPlugin } from "./useMCPPlugin";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { PageHeader } from "@/components/PageHeader";
 import styles from "./index.module.less";
 
 type MCPTransport = "stdio" | "streamable_http" | "sse";
+
+const recoveryGuidance: Record<string, string> = {
+  invalid_upgrade_record: "Review the MCP installation record, then retry",
+  orphaned_installation_record:
+    "Review the MCP installation record, then retry",
+  offline_upgrade_failed_check_dependencies_and_storage:
+    "Check offline dependencies and storage, then retry",
+  workspace_needs_review:
+    "Review this workspace’s saved MCP configuration, then retry",
+  invalid_plugin_settings: "Review the MCP plugin settings, then retry",
+  plugin_runtime_failed:
+    "The MCP plugin failed to load. Open Plugin Manager and select Repair and retry.",
+};
 
 function normalizeTransport(raw?: unknown): MCPTransport | undefined {
   if (typeof raw !== "string") return undefined;
@@ -72,12 +90,36 @@ const defaultForm = {
   cwd: "",
 };
 
-function MCPPage() {
+function MCPPage({
+  managementAvailable = false,
+  managementMounted = false,
+}: {
+  managementAvailable?: boolean;
+  managementMounted?: boolean;
+}) {
   const { t } = useTranslation();
+  const plugin = useMCPPlugin(managementMounted);
+  const activeButUnavailable =
+    plugin.state?.status === "active" && plugin.state.available === false;
+  const readOnly =
+    plugin.busy ||
+    !managementAvailable ||
+    plugin.state?.status !== "active" ||
+    activeButUnavailable ||
+    plugin.state.workspace?.eligible === false;
+  const recoveryCodes = [
+    ...new Set([
+      ...(plugin.state?.diagnostics ?? []),
+      ...(plugin.state?.workspace?.diagnostics ?? []),
+    ]),
+  ].filter((code) => recoveryGuidance[code]);
   const {
+    agentId,
     clients,
     providerServers,
     loading,
+    error,
+    ready,
     toggleEnabled,
     deleteClient,
     createClient,
@@ -85,8 +127,18 @@ function MCPPage() {
     updatePolicy,
     refreshClients,
   } = useMCP();
+  const [query, setQuery] = useState("");
+  const [filter, setFilter] = useState("all");
+  const visibleClients = clients.filter(
+    (client) =>
+      (filter === "all" || client.enabled === (filter === "enabled")) &&
+      `${client.name} ${client.description ?? ""} ${client.key}`
+        .toLocaleLowerCase()
+        .includes(query.toLocaleLowerCase().trim()),
+  );
   const [createModalOpen, setCreateModalOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<"json" | "form">("json");
+  const [activeTab, setActiveTab] = useState<"json" | "form">("form");
+  const [createError, setCreateError] = useState<string | null>(null);
 
   // JSON-import state
   const [newClientJson, setNewClientJson] = useState(`{
@@ -124,8 +176,17 @@ function MCPPage() {
   }
 }`);
     setForm({ ...defaultForm });
-    setActiveTab("json");
+    setActiveTab("form");
+    setCreateError(null);
   }, []);
+  const activeAgentRef = useRef(agentId);
+
+  useLayoutEffect(() => {
+    if (activeAgentRef.current === agentId) return;
+    activeAgentRef.current = agentId;
+    setCreateModalOpen(false);
+    resetModal();
+  }, [agentId, resetModal]);
 
   const handleToggleEnabled = async (
     client: MCPClientInfo,
@@ -142,6 +203,9 @@ function MCPPage() {
 
   // ---------- JSON import ----------
   const handleCreateFromJson = async () => {
+    const submitAgent = agentId;
+    if (activeAgentRef.current !== submitAgent) return;
+    setCreateError(null);
     try {
       const parsed = JSON.parse(newClientJson) as Record<string, unknown>;
       const clientsToCreate: Array<{
@@ -184,9 +248,14 @@ function MCPPage() {
         });
       }
 
+      if (clientsToCreate.length === 0) {
+        setCreateError(t("mcp.invalidJson"));
+        return;
+      }
       let allSuccess = true;
       for (const { key, data } of clientsToCreate) {
         const success = await createClient(key, data);
+        if (activeAgentRef.current !== submitAgent) return;
         if (!success) allSuccess = false;
       }
 
@@ -195,20 +264,23 @@ function MCPPage() {
         resetModal();
       }
     } catch {
-      alert("Invalid JSON format");
+      setCreateError(t("mcp.invalidJson"));
     }
   };
 
   // ---------- Form create ----------
   const handleCreateFromForm = async () => {
+    const submitAgent = agentId;
+    if (activeAgentRef.current !== submitAgent) return;
+    setCreateError(null);
     const key = form.key.trim();
     const name = form.name.trim();
     if (!key) {
-      alert(t("mcp.form.keyRequired"));
+      setCreateError(t("mcp.form.keyRequired"));
       return;
     }
     if (!name) {
-      alert(t("mcp.form.nameRequired"));
+      setCreateError(t("mcp.form.nameRequired"));
       return;
     }
 
@@ -216,11 +288,11 @@ function MCPPage() {
       form.transport === "streamable_http" || form.transport === "sse";
 
     if (isHttp && !form.url.trim()) {
-      alert(t("mcp.form.urlRequired"));
+      setCreateError(t("mcp.form.urlRequired"));
       return;
     }
     if (form.transport === "stdio" && !form.command.trim()) {
-      alert(t("mcp.form.commandRequired"));
+      setCreateError(t("mcp.form.commandRequired"));
       return;
     }
 
@@ -255,6 +327,7 @@ function MCPPage() {
     };
 
     const success = await createClient(key, clientData);
+    if (activeAgentRef.current !== submitAgent) return;
     if (success) {
       setCreateModalOpen(false);
       resetModal();
@@ -267,108 +340,271 @@ function MCPPage() {
   return (
     <div className={styles.mcpPage}>
       <PageHeader
-        items={[{ title: t("nav.agent") }, { title: t("mcp.title") }]}
+        current={t("mcp.title")}
         extra={
-          <Button
-            type="primary"
-            icon={<Plus size={14} />}
-            onClick={() => setCreateModalOpen(true)}
-          >
-            {t("mcp.create")}
-          </Button>
+          ready ? (
+            <Button
+              disabled={readOnly}
+              type="primary"
+              icon={<Plus size={14} />}
+              onClick={() => setCreateModalOpen(true)}
+            >
+              {t("mcp.create")}
+            </Button>
+          ) : undefined
         }
       />
 
-      {loading ? (
-        <div className={styles.loading}>
-          <p>{t("common.loading")}</p>
-        </div>
-      ) : clients.length === 0 && providerServers.length === 0 ? (
-        <div className={styles.emptyState}>
-          <Empty description={t("mcp.emptyState")} />
-        </div>
-      ) : (
-        <div className={styles.mcpSections}>
-          <section className={styles.mcpSection}>
-            <div className={styles.sectionHeader}>
-              <div className={styles.sectionIcon}>
-                <Server size={17} />
-              </div>
-              <div>
-                <h2>{t("mcp.qwenpawManaged")}</h2>
-                <p>{t("mcp.qwenpawManagedHint")}</p>
-              </div>
-            </div>
-            {clients.length === 0 ? (
-              <div className={styles.sectionEmpty}>{t("mcp.emptyState")}</div>
-            ) : (
-              <div className={styles.mcpGrid}>
-                {clients.map((client) => (
-                  <MCPClientCard
-                    key={client.key}
-                    client={client}
-                    onToggle={handleToggleEnabled}
-                    onDelete={handleDelete}
-                    onUpdate={updateClient}
-                    onUpdatePolicy={updatePolicy}
-                    onRefresh={refreshClients}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
+      {plugin.state?.version && (
+        <div>{t("mcp.plugin.version", { version: plugin.state.version })}</div>
+      )}
+      {plugin.state?.update && (
+        <Alert
+          type="info"
+          showIcon
+          message={t("mcp.plugin.updateAvailable", {
+            version: plugin.state.update.version,
+          })}
+          action={
+            <Button loading={plugin.busy} onClick={() => void plugin.update()}>
+              {t("mcp.plugin.update")}
+            </Button>
+          }
+        />
+      )}
+      {plugin.state?.update_diagnostics?.length ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={t("mcp.plugin.versionCheckUnavailable")}
+        />
+      ) : null}
+      {!readOnly && plugin.error && (
+        <Alert type="error" showIcon message={plugin.error} />
+      )}
 
-          {providerServers.length > 0 && (
-            <section className={styles.mcpSection}>
-              <div className={styles.sectionHeader}>
-                <div className={styles.sectionIcon}>
-                  <LockKeyhole size={17} />
-                </div>
-                <div>
-                  <h2>
-                    {t("mcp.providerManaged", {
-                      provider: providerServers[0].provider_id,
-                    })}
-                  </h2>
-                  <p>{t("mcp.providerManagedHint")}</p>
-                </div>
-              </div>
-              <div className={styles.providerGrid}>
-                {providerServers.map((server) => (
-                  <article
-                    className={styles.providerCard}
-                    key={`${server.provider_id}:${server.name}`}
-                  >
-                    <div className={styles.providerCardHeader}>
-                      <strong>{server.name}</strong>
-                      <span
-                        className={
-                          server.enabled
-                            ? styles.providerEnabled
-                            : styles.providerDisabled
-                        }
-                      >
-                        {server.enabled
-                          ? t("common.enabled")
-                          : t("common.disabled")}
-                      </span>
-                    </div>
-                    <div className={styles.providerMeta}>
-                      <span>{server.transport}</span>
-                      <span>{t("mcp.providerOnly")}</span>
-                      <span>{t("mcp.readOnly")}</span>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            </section>
+      {plugin.state?.legacy_mcp_archived && (
+        <Alert type="warning" showIcon message={t("mcp.legacyArchived")} />
+      )}
+
+      {recoveryCodes.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={t("mcp.recovery.title", {
+            defaultValue: "MCP needs attention",
+          })}
+          description={recoveryCodes.map((code) => (
+            <div key={code}>
+              {t(`mcp.recovery.${code}`, {
+                defaultValue: recoveryGuidance[code],
+              })}
+            </div>
+          ))}
+          action={
+            recoveryCodes.includes("plugin_runtime_failed") ? (
+              <Link to="/market?tab=plugins&view=installed&plugin=qwenpaw-mcp">
+                {t("nav.pluginManager")}
+              </Link>
+            ) : (
+              <Button loading={plugin.busy} onClick={plugin.activate}>
+                {t("common.retry", { defaultValue: "Retry" })}
+              </Button>
+            )
+          }
+        />
+      )}
+
+      {readOnly && recoveryCodes.length === 0 && (
+        <Alert
+          type={
+            plugin.error || plugin.state?.status === "failed" ? "error" : "info"
+          }
+          showIcon
+          message={
+            plugin.error ||
+            t(`mcp.plugin.${plugin.state?.status ?? "loading"}`, {
+              defaultValue:
+                plugin.state?.status === "disabled"
+                  ? "MCP plugin is disabled"
+                  : plugin.state?.installed
+                  ? "MCP management is unavailable"
+                  : "Install the MCP plugin to manage servers",
+            })
+          }
+          description={t("mcp.readOnly")}
+          action={
+            (plugin.error ||
+              activeButUnavailable ||
+              (plugin.state && plugin.state.status !== "active")) && (
+              <Button
+                loading={plugin.busy}
+                onClick={
+                  plugin.state?.status === "active"
+                    ? plugin.refresh
+                    : plugin.activate
+                }
+              >
+                {plugin.error ||
+                plugin.state?.status === "failed" ||
+                activeButUnavailable
+                  ? t("common.retry", { defaultValue: "Retry" })
+                  : plugin.state?.installed
+                  ? t("common.enable", { defaultValue: "Enable" })
+                  : t("common.install", { defaultValue: "Install" })}
+              </Button>
+            )
+          }
+        />
+      )}
+
+      {ready && (
+        <div className={styles.collectionToolbar}>
+          <Input
+            aria-label={t("common.search")}
+            placeholder={t("common.search")}
+            prefix={<Search size={16} />}
+            value={query}
+            allowClear
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <Segmented
+            value={filter}
+            onChange={(value) => setFilter(String(value))}
+            options={[
+              { value: "all", label: t("common.all") },
+              { value: "enabled", label: t("common.enabled") },
+              { value: "disabled", label: t("common.disabled") },
+            ]}
+          />
+        </div>
+      )}
+      {!ready ? (
+        <div className={styles.loading}>
+          {error ? (
+            <Alert
+              type="error"
+              showIcon
+              message={error}
+              action={
+                <Button onClick={() => void refreshClients()}>
+                  {t("common.retry")}
+                </Button>
+              }
+            />
+          ) : (
+            <p>{t("common.loading")}</p>
           )}
         </div>
+      ) : (
+        <>
+          {error && (
+            <Alert
+              className={styles.loadWarning}
+              type="warning"
+              showIcon
+              message={error}
+              action={
+                <Button onClick={() => void refreshClients()}>
+                  {t("common.retry")}
+                </Button>
+              }
+            />
+          )}
+          {loading ? null : clients.length === 0 &&
+            providerServers.length === 0 ? (
+            <div className={styles.emptyState}>
+              <Empty description={t("mcp.emptyState")} />
+            </div>
+          ) : (
+            <div className={styles.mcpSections}>
+              <section className={styles.mcpSection}>
+                <div className={styles.sectionHeader}>
+                  <div className={styles.sectionIcon}>
+                    <Server size={17} />
+                  </div>
+                  <div>
+                    <h2>{t("mcp.qwenpawManaged")}</h2>
+                    <InlineHelp>{t("mcp.qwenpawManagedHint")}</InlineHelp>
+                  </div>
+                </div>
+                {visibleClients.length === 0 ? (
+                  <div className={styles.sectionEmpty}>
+                    {t("mcp.emptyState")}
+                  </div>
+                ) : (
+                  <div className={styles.mcpGrid}>
+                    {visibleClients.map((client, index) => (
+                      <Cascade key={`${agentId}:${client.key}`} index={index}>
+                        <MCPClientCard
+                          readOnly={readOnly}
+                          client={client}
+                          onToggle={handleToggleEnabled}
+                          onDelete={handleDelete}
+                          onUpdate={updateClient}
+                          onUpdatePolicy={updatePolicy}
+                          onRefresh={refreshClients}
+                        />
+                      </Cascade>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {providerServers.length > 0 && (
+                <section className={styles.mcpSection}>
+                  <div className={styles.sectionHeader}>
+                    <div className={styles.sectionIcon}>
+                      <LockKeyhole size={17} />
+                    </div>
+                    <div>
+                      <h2>
+                        {t("mcp.providerManaged", {
+                          provider: providerServers[0].provider_id,
+                        })}
+                      </h2>
+                      <InlineHelp>{t("mcp.providerManagedHint")}</InlineHelp>
+                    </div>
+                  </div>
+                  <div className={styles.providerGrid}>
+                    {providerServers.map((server) => (
+                      <article
+                        className={styles.providerCard}
+                        key={`${server.provider_id}:${server.name}`}
+                      >
+                        <div className={styles.providerCardHeader}>
+                          <strong>{server.name}</strong>
+                          <span
+                            className={
+                              server.enabled
+                                ? styles.providerEnabled
+                                : styles.providerDisabled
+                            }
+                          >
+                            {server.enabled
+                              ? t("common.enabled")
+                              : t("common.disabled")}
+                          </span>
+                        </div>
+                        <div className={styles.providerMeta}>
+                          <span>{server.transport}</span>
+                          <span>{t("mcp.providerOnly")}</span>
+                          <span>{t("mcp.readOnly")}</span>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
+            </div>
+          )}
+        </>
       )}
 
       <Modal
+        centered
         title={t("mcp.create")}
-        open={createModalOpen}
+        open={ready && createModalOpen && !readOnly}
         onCancel={() => {
           setCreateModalOpen(false);
           resetModal();
@@ -398,6 +634,14 @@ function MCPPage() {
         }
         width={800}
       >
+        {createError && (
+          <Alert
+            type="error"
+            showIcon
+            message={createError}
+            style={{ marginBottom: 16 }}
+          />
+        )}
         <Tabs
           activeKey={activeTab}
           onChange={(k) => setActiveTab(k as "json" | "form")}
@@ -445,9 +689,9 @@ function MCPPage() {
                   {/* Key + Name */}
                   <div style={rowStyle}>
                     <div style={fieldStyle}>
-                      <label style={labelStyle}>
+                      <label className={styles.formLabel}>
                         {t("mcp.form.key")}
-                        <span style={{ color: "#c0392b" }}> *</span>
+                        <span className={styles.formRequired}> *</span>
                       </label>
                       <Input
                         placeholder={t("mcp.form.keyPlaceholder")}
@@ -456,9 +700,9 @@ function MCPPage() {
                       />
                     </div>
                     <div style={fieldStyle}>
-                      <label style={labelStyle}>
+                      <label className={styles.formLabel}>
                         {t("mcp.form.name")}
-                        <span style={{ color: "#c0392b" }}> *</span>
+                        <span className={styles.formRequired}> *</span>
                       </label>
                       <Input
                         placeholder={t("mcp.form.namePlaceholder")}
@@ -470,7 +714,9 @@ function MCPPage() {
 
                   {/* Transport */}
                   <div>
-                    <label style={labelStyle}>{t("mcp.form.transport")}</label>
+                    <label className={styles.formLabel}>
+                      {t("mcp.form.transport")}
+                    </label>
                     <Select
                       value={form.transport}
                       onChange={(v) => setField("transport", v as MCPTransport)}
@@ -489,9 +735,9 @@ function MCPPage() {
                   {/* URL (HTTP/SSE) or Command (stdio) */}
                   {isHttpTransport ? (
                     <div>
-                      <label style={labelStyle}>
+                      <label className={styles.formLabel}>
                         {t("mcp.form.url")}
-                        <span style={{ color: "#c0392b" }}> *</span>
+                        <span className={styles.formRequired}> *</span>
                       </label>
                       <Input
                         placeholder="https://mcp.example.com/mcp"
@@ -502,9 +748,9 @@ function MCPPage() {
                   ) : (
                     <>
                       <div>
-                        <label style={labelStyle}>
+                        <label className={styles.formLabel}>
                           {t("mcp.form.command")}
-                          <span style={{ color: "#c0392b" }}> *</span>
+                          <span className={styles.formRequired}> *</span>
                         </label>
                         <Input
                           placeholder="npx"
@@ -513,7 +759,9 @@ function MCPPage() {
                         />
                       </div>
                       <div>
-                        <label style={labelStyle}>{t("mcp.form.args")}</label>
+                        <label className={styles.formLabel}>
+                          {t("mcp.form.args")}
+                        </label>
                         <Input
                           placeholder="-y @example/mcp-server"
                           value={form.args}
@@ -525,7 +773,7 @@ function MCPPage() {
 
                   {/* Description */}
                   <div>
-                    <label style={labelStyle}>
+                    <label className={styles.formLabel}>
                       {t("mcp.form.description")}
                     </label>
                     <Input
@@ -538,7 +786,9 @@ function MCPPage() {
                   {/* Env (only for stdio) */}
                   {form.transport === "stdio" && (
                     <div>
-                      <label style={labelStyle}>{t("mcp.form.env")}</label>
+                      <label className={styles.formLabel}>
+                        {t("mcp.form.env")}
+                      </label>
                       <Input.TextArea
                         placeholder={t("mcp.form.envPlaceholder")}
                         value={form.env}
@@ -567,12 +817,6 @@ const fieldStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 4,
-};
-
-const labelStyle: React.CSSProperties = {
-  fontSize: 12,
-  color: "#555",
-  fontWeight: 500,
 };
 
 export default MCPPage;

@@ -5,7 +5,7 @@ from fastapi import APIRouter
 
 from .agents import router as agents_router
 from .config import router as config_router
-from .local_models import router as local_models_router
+from .chatgpt import router as chatgpt_router
 from .providers import router as providers_router
 from .market import router as market_router
 from .skills import router as skills_router
@@ -14,12 +14,14 @@ from .workspace import router as workspace_router
 from .envs import router as envs_router
 from .mcp import router as mcp_router
 from .mcp_oauth import router as mcp_oauth_router
+from .mcp_plugin import router as mcp_plugin_router
 from .tools import router as tools_router
 from ..crons.api import router as cron_router
 from ..chats.api import router as runner_router
 from .console import router as console_router
 from .fork import router as fork_router
 from .token_usage import router as token_usage_router
+from .avatars import router as avatars_router
 from .agent_stats import router as agent_stats_router
 from .auth import router as auth_router
 from .messages import router as messages_router
@@ -34,19 +36,26 @@ from .access_control import router as access_control_router
 from .mail_access_control import router as mail_access_control_router
 from .provider_oauth import router as provider_oauth_router
 from .pawapps import router as pawapps_router
-from .harnesses import router as harnesses_router
 from .checkpoints import router as checkpoints_router
+from .community import router as community_router
+from .community_connection import router as community_connection_router
+from .community_report import router as community_report_router
+from .terminal import router as terminal_router
 
 router = APIRouter()
+router.include_router(community_router)
+router.include_router(community_connection_router)
+router.include_router(community_report_router)
+router.include_router(chatgpt_router)
 
 router.include_router(agents_router)
 router.include_router(config_router)
 router.include_router(console_router)
 router.include_router(fork_router)
 router.include_router(cron_router)
-router.include_router(local_models_router)
 router.include_router(mcp_oauth_router)
 router.include_router(mcp_router)
+router.include_router(mcp_plugin_router)
 router.include_router(messages_router)
 router.include_router(providers_router)
 router.include_router(runner_router)
@@ -57,6 +66,7 @@ router.include_router(tools_router)
 router.include_router(workspace_router)
 router.include_router(envs_router)
 router.include_router(token_usage_router)
+router.include_router(avatars_router)
 router.include_router(agent_stats_router)
 router.include_router(auth_router)
 router.include_router(files_router)
@@ -70,8 +80,8 @@ router.include_router(access_control_router)
 router.include_router(mail_access_control_router)
 router.include_router(provider_oauth_router)
 router.include_router(pawapps_router)
-router.include_router(harnesses_router)
 router.include_router(checkpoints_router)
+router.include_router(terminal_router)
 
 
 def create_agent_scoped_router() -> APIRouter:

@@ -12,6 +12,7 @@ catalog every model inherited the 128k ``max_input_length`` default, so a
 from types import SimpleNamespace
 
 import pytest
+from qwenpaw.providers import model_resolution
 
 from qwenpaw.providers.context_windows import (
     DEFAULT_CONTEXT_WINDOW,
@@ -147,6 +148,11 @@ def test_short_patterns_require_a_word_boundary():
     assert known_context_size("foo-bar-o3") == 200_000
 
 
+@pytest.fixture(autouse=True)
+def static_catalog_only(monkeypatch):
+    monkeypatch.setattr(model_resolution, f"model_metadata", lambda *args: [])
+
+
 class _CatalogProvider:
     """Minimal stand-in exposing what get_context_size touches.
 
@@ -161,6 +167,16 @@ class _CatalogProvider:
 
     def get_discovered_model_info(self, model_id):
         return None
+
+    hidden_model_ids = []
+    removed_model_ids = []
+    discovered_models = []
+    models = []
+    extra_models = []
+    id = f"test-catalog"
+    base_url = f""
+    is_local = False
+    resolve_model_info = Provider.resolve_model_info
 
     get_context_size = Provider.get_context_size
     _get_context_size = Provider._get_context_size
@@ -353,6 +369,35 @@ def test_ollama_explicit_config_still_wins():
         ],
     )
     assert provider.get_context_size("qwen3-coder:30b") == 32_768
+
+
+def test_ollama_uses_auto_detected_num_ctx():
+    """Auto-detected num_ctx must drive compaction, not the 128k default."""
+    provider = _make_ollama(
+        models=[
+            ModelInfo(
+                id="qwen3-coder:30b",
+                name="qwen3-coder",
+                max_input_length_auto_detected=8_192,
+            ),
+        ],
+    )
+    assert provider.get_context_size("qwen3-coder:30b") == 8_192
+
+
+def test_ollama_explicit_config_beats_auto_detected():
+    provider = _make_ollama(
+        models=[
+            ModelInfo(
+                id="qwen3-coder:30b",
+                name="qwen3-coder",
+                max_input_length=16_384,
+                max_input_length_configured=True,
+                max_input_length_auto_detected=8_192,
+            ),
+        ],
+    )
+    assert provider.get_context_size("qwen3-coder:30b") == 16_384
 
 
 # -- OpenRouter: the API's context_length is authoritative --------------------

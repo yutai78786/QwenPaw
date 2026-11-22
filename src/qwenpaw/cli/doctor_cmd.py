@@ -16,6 +16,7 @@ from pathlib import Path
 import click
 import httpx
 
+from ..utils.io_utils import run_sync_io
 from ..__version__ import __version__
 from ..app.auth import has_registered_users, is_auth_enabled
 from ..config import load_config
@@ -51,7 +52,7 @@ from .doctor_checks import (
     scan_unknown_config_keys,
     security_baseline_notes,
     skill_layout_notes,
-    qwenpaw_local_llm_deep_notes,
+    # qwenpaw_local_llm_deep_notes,
     startup_extra_volume_disk_notes,
     workspace_hygiene_notes,
     windows_environment_lines,
@@ -321,8 +322,9 @@ async def _check_active_llm(
     timeout: float,
     deep: bool,
 ) -> tuple[bool, str, list[str]]:
+    del deep
     manager = ProviderManager.get_instance()
-    slot = manager.get_active_model()
+    slot = await run_sync_io(manager.get_active_model)
     if (
         slot is None
         or not (slot.provider_id or "").strip()
@@ -334,17 +336,26 @@ async def _check_active_llm(
             "an active model",
             [],
         )
-    provider = manager.get_provider(slot.provider_id)
+    provider = await run_sync_io(manager.get_provider, slot.provider_id)
     if provider is None:
+        # TODO: Resolve plugin providers through the plugin CLI contract.
+        if slot.provider_id in ("qwenpaw-local", "copaw-local"):
+            return (
+                True,
+                f"{slot.provider_id}: model check skipped "
+                "(plugin CLI integration pending)",
+                [],
+            )
         return False, f"provider not found: {slot.provider_id!r}", []
     ok, reason = _provider_is_configured(provider)
     if not ok:
         return False, f"{slot.provider_id}: {reason}", []
 
     deep_notes: list[str] = []
-    pid = (slot.provider_id or "").strip()
-    if deep and pid in ("qwenpaw-local", "copaw-local"):
-        deep_notes = qwenpaw_local_llm_deep_notes()
+    # TODO: Restore local diagnostics through the plugin CLI contract.
+    # pid = (slot.provider_id or "").strip()
+    # if deep and pid in ("qwenpaw-local", "copaw-local"):
+    #     deep_notes = qwenpaw_local_llm_deep_notes()
 
     if not getattr(provider, "support_connection_check", True):
         return (
@@ -858,7 +869,7 @@ def run_doctor_checks(
         if aok:
             click.echo(
                 click.style("OK", fg="green")
-                + " — all enabled agents reachable",
+                + " — enabled-agent model checks completed",
             )
         else:
             failed = True
@@ -996,9 +1007,8 @@ def run_doctor_checks(
     "--deep",
     is_flag=True,
     help=(
-        "Run extra checks: enabled-channel reachability (non-fatal notes; "
-        "uses --timeout) and, when the active model is qwenpaw-local, "
-        "llama.cpp install/server status notes."
+        "Run extra checks: enabled-channel reachability "
+        "(non-fatal notes; uses --timeout)."
     ),
 )
 @click.pass_context
