@@ -138,6 +138,17 @@ async def assert_endpoint_credentials_isolated(host, tmp_path, endpoint):
                 await asyncio.gather(
                     *tuple(service._driver_config._reload_tasks),
                 )
+                # The poll-driven watcher re-applies card changes on its own
+                # schedule (manual-edit path); its metadata sync bumps the
+                # driver revision and can invalidate an in-flight discovery.
+                # Wait until it has caught up so the next call() is stable.
+                watcher = runtime.watcher
+                if watcher is not None:
+                    async with asyncio.timeout(10):
+                        while (
+                            await watcher._snapshot() != watcher._last_snapshot
+                        ):
+                            await asyncio.sleep(0.05)
 
             async def call():
                 return await runtime.invoke_capability(
@@ -161,6 +172,7 @@ async def assert_endpoint_credentials_isolated(host, tmp_path, endpoint):
                     "isolated",
                     MCPAccessPolicy(default_effect="allow"),
                 )
+                await drain_reload()
                 assert (await call()).ok
                 await http.post(
                     bases[1] + "/control",
