@@ -271,13 +271,26 @@ class SessionsPage(BasePage):
 
         The settle signal is the table BODY rendering one of its two
         terminal states: a data row, or the empty-state placeholder row
-        (antd renders ``<tr class="<prefix>-table-placeholder">`` once
-        ``loading`` is false and ``dataSource`` is empty). Both prove the
-        async ``GET /api/chats`` response has been committed, so the row
+        with NO loading spinner active. Both prove the async
+        ``GET /api/chats`` response has been committed, so the row
         count taken right after is authoritative. Waiting for the spinner
         to disappear instead would be weaker: a Table implementation that
         renders no spinner at all would make such a wait pass instantly
         and leave the original race in place.
+
+        🔴 Correction (run188 triage, 2026-11-25): the original premise
+        "placeholder renders once ``loading`` is false" was WRONG —
+        antd/rc-table renders the placeholder row whenever ``dataSource``
+        is empty, INCLUDING while ``loading`` is true (the spinner merely
+        overlays it). The placeholder alone therefore also matches the
+        initial pre-fetch state, which is exactly how run188's
+        ``test_session_edit_name_and_save`` skipped with "No operable
+        sessions" while the server held 3 sessions (live probe: GET
+        /api/chats returned 3 at ~118 ms, placeholder + "Active (0)"
+        persisted to ~191-247 ms, rows committed ~247 ms). The spin guard
+        below closes that window; a genuinely empty list still settles
+        (placeholder, no spinner) and returns 0 for the caller's skip
+        branch.
 
         A genuinely empty session list is NOT an error here: the
         placeholder settles the wait and this returns 0, letting the
@@ -308,6 +321,39 @@ class SessionsPage(BasePage):
                 f"rendered. spinner_nodes={spinning}; tab labels: "
                 f"{tab_text}."
             )
+        # 🔴 run188 triage (2026-11-25): antd/rc-table renders the empty
+        # placeholder UNDER the loading spinner as well (initial pre-fetch
+        # state), so "placeholder visible" alone does NOT prove the async
+        # GET /api/chats committed. Live probe at e64fd38fb: all three GETs
+        # returned 3 chats while the page still showed placeholder +
+        # "Active (0)" for ~60 ms before the rows committed. If a spinner is
+        # still spinning, wait for the true terminal state (data rows, or
+        # placeholder with no spinner) before counting.
+        if self.page.locator(self.TABLE_SPINNING).count() > 0:
+            try:
+                self.page.wait_for_function(
+                    """(sel) => {
+                        if (document.querySelectorAll(sel.rows).length) {
+                            return true;
+                        }
+                        const ph = document.querySelector(sel.ph);
+                        return !!ph && !document.querySelector(sel.spin);
+                    }""",
+                    {
+                        "rows": self.SESSION_DATA_ROW,
+                        "ph": ".qwenpaw-table-placeholder, "
+                        ".ant-table-placeholder",
+                        "spin": self.TABLE_SPINNING,
+                    },
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                spinning = self.page.locator(self.TABLE_SPINNING).count()
+                raise AssertionError(
+                    f"Sessions table stayed in pre-fetch placeholder state "
+                    f"within {timeout}ms: spinner_nodes={spinning}; "
+                    f"data rows never committed."
+                )
         count = len(self.get_session_data_rows())
         logger.info(f"Sessions table rendered {count} data row(s)")
         return count

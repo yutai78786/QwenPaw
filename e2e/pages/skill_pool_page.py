@@ -44,15 +44,26 @@ class SkillPoolPage(BasePage):
     )
     # Sync status badge rendered for every card.
     STATUS_BADGE = '[class*="statusBadge"]'
-    AUTOMATION_TAG = (
-        'button[data-testid^="skill-automation-"][aria-pressed="true"]'
+    # Upstream #8803 (f83677c7a) removed the card footer: the
+    # ``skill-automation-<name>`` quick-action button (and its aria-pressed
+    # state / Auto Sync text tag) no longer exist. The automation quick
+    # action now lives in the card's Actions dropdown (key ``auto_sync``),
+    # and the persisted enabled state is a Check icon inside that menu item
+    # (aria-label = common.enabled). Re-anchored 2026-11-25 (run188 triage).
+    CARD_ACTIONS_BTN = (
+        'button[aria-label="Actions"], button[aria-label="操作"]'
+    )
+    AUTOMATION_MENU_ITEM = (
+        '.qwenpaw-dropdown-menu-item:has-text("Auto Sync"), '
+        '.ant-dropdown-menu-item:has-text("Auto Sync"), '
+        '.qwenpaw-dropdown-menu-item:has-text("自动同步"), '
+        '.ant-dropdown-menu-item:has-text("自动同步")'
+    )
+    AUTOMATION_ENABLED_CHECK = (
+        'svg[aria-label="Enabled"], svg[aria-label="已启用"]'
     )
     BUILTIN_TAG = '[class*="builtinTag"]'
     CUSTOM_TAG = '[class*="customTag"]'
-    # Card footer is only mounted on hover / batch / mobile; the single
-    # automation quick action (SyncOutlined) lives inside it.
-    CARD_FOOTER = '[class*="PoolSkillCard-module__footer"]'
-    AUTOMATION_BUTTON = 'button[data-testid^="skill-automation-"]'
 
     # PoolSkillDrawer uses SettingsDrawer, which renders a SharedModal on
     # desktop. Anchor the editor on its edit-only Auto Sync control so other
@@ -120,6 +131,21 @@ class SkillPoolPage(BasePage):
         card.scroll_into_view_if_needed(timeout=5000)
         card.hover(timeout=5000)
         self.wait(300)
+        return self
+
+    def open_card_actions(self, card: Locator) -> "SkillPoolPage":
+        """Open a card's Actions dropdown (post-#8803 quick-action home)."""
+        card.scroll_into_view_if_needed(timeout=5000)
+        card.locator(self.CARD_ACTIONS_BTN).first.click(timeout=5000)
+        self.page.locator(self.AUTOMATION_MENU_ITEM).first.wait_for(
+            state="visible", timeout=self.timeout
+        )
+        return self
+
+    def close_card_actions(self) -> "SkillPoolPage":
+        """Dismiss the Actions dropdown without triggering any item."""
+        self.page.keyboard.press("Escape")
+        self.wait(200)
         return self
 
     def open_edit_drawer(self, name: str) -> "SkillPoolPage":
