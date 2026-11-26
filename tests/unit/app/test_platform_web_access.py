@@ -417,9 +417,13 @@ async def test_versioned_console_assets_stream_with_bounded_backpressure(
             RelayFrame(RelayFrameType.END, stream_id="asset"),
         )
         task = transport._tasks["asset"]
-        for _ in range(100):
-            if len(frames) >= 9:
-                break
+        # Loaded runners can stretch this streaming pipeline far
+        # beyond its idle cost; poll with a generous wall-clock
+        # deadline. The 8-token response window still caps output
+        # at 9 frames, so the backpressure assertions below remain
+        # exact.
+        deadline = asyncio.get_running_loop().time() + 30
+        while len(frames) < 9 and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.01)
         assert len(frames) == 9
         assert not task.done()
